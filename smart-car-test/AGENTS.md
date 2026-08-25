@@ -10,7 +10,7 @@ This file is the handoff summary for agents working in `smart-car-test`.
 - Current phase: bring-up and calibration of motors, encoders, infrared line sensors, and ultrasonic ranging.
 - Course direction from the lecture: line following and obstacle avoidance first, with camera/ball interaction and optional extensions in later phases.
 
-The detailed, experimentally confirmed motor and infrared mapping is in [电机与红外测试记录.md](电机与红外测试记录.md). The complete development history, wiring summary, algorithm experiments, failures, and current open sharp-corner problem are in [项目开发与实验日志.md](项目开发与实验日志.md). Treat those documents and the current source as authoritative when older notes disagree.
+The detailed, experimentally confirmed motor and infrared mapping is in [电机与红外测试记录.md](电机与红外测试记录.md). The complete development history, wiring summary, algorithm experiments, failures, and latest physical-test conclusions are in [项目开发与实验日志.md](项目开发与实验日志.md). Treat those documents and the current source as authoritative when older notes disagree.
 
 ## Local Reference Material
 
@@ -77,7 +77,7 @@ Main source: `main/main.c`.
 - Line following normalizes the active-low inputs and computes a proportional error using scaled physical left-to-right weights `-6, -2, +2, +6`.
 - It steers with motors A/C around the confirmed forward combination and keeps rear motor B stopped. Patterns `0110` and `1111` use straight speed; other nonzero patterns normally use curve speed. Patterns confined to one physical side use a `170/1000` base and `280/1000` command cap.
 - Search direction is independently latched. An opposite raw direction must persist for three 20 ms cycles before replacing the latch; unconfirmed opposite readings continue steering in the latched direction. For `0000`, the controller performs equal-and-opposite A/C in-place search at `280/1000` using this latch. Obstacle avoidance no longer overwrites it with a fixed right direction.
-- Latest physical-test result: the direction-latch experiment still performs poorly at sharp corners and does not reliably fix direction-dependent entry behavior. This is an instrumented experiment, not a solved feature. Preserve that conclusion when handing off or proposing the next algorithm.
+- Latest physical-test result: after broader testing, the direction latch, three-cycle confirmation, and edge-speed limit handle the great majority of sharp corners sufficiently well. Rare direction-dependent entry cases remain an optional optimization point, not a required fix or blocker. Preserve both the earlier poor test and this newer conclusion in future handoffs.
 - Telemetry prints normalized detections in physical `L,LC,RC,R` order, ultrasonic distance, and A/B/C encoder counts every 500 ms. In this display, `1` means black detected.
 - Follow-mode logs include timestamp, control state, infrared pattern and stability count, active sensor count, current/last error, selected base speed, ultrasonic distance, obstacle state, limited A/B/C commands, and encoder counts.
 - While following, two consecutive HC-SR04 readings at or below 250 mm brake the car and start a `190/1000` right in-place avoidance turn. Two readings at or above 350 mm release avoidance after at least 850 ms, then infrared lost-line recovery searches in the same direction.

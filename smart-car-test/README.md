@@ -11,7 +11,7 @@ Current verified features:
 - Non-blocking HC-SR04 ranging and line-follow obstacle avoidance.
 - USB Serial/JTAG command console.
 
-See [电机与红外测试记录.md](电机与红外测试记录.md) for the confirmed motor and infrared bring-up results. See [项目开发与实验日志.md](项目开发与实验日志.md) for complete wiring, algorithm iterations, problems, solutions, and the latest unsuccessful sharp-corner experiment. See [AGENTS.md](AGENTS.md) for agent handoff notes.
+See [电机与红外测试记录.md](电机与红外测试记录.md) for the confirmed motor and infrared bring-up results. See [项目开发与实验日志.md](项目开发与实验日志.md) for complete wiring, algorithm iterations, problems, solutions, and physical-test results. See [AGENTS.md](AGENTS.md) for agent handoff notes.
 
 ## Build
 
@@ -86,9 +86,9 @@ Obstacle avoidance is active whenever line following is active. HC-SR04 measurem
 
 Two consecutive readings at or below 250 mm trigger avoidance. The car brakes for 250 ms, then rotates right in place using `A=190, B=0, C=-190`. Once two readings are at least 350 mm away (after a minimum 850 ms turn), line following resumes. A maximum 2400 ms turn prevents the avoidance state from becoming stuck when Echo readings are unavailable. Avoidance no longer overwrites the validated line-search direction.
 
-## Current Experimental Result
+## Sharp-Corner Status
 
-The direction-latch and edge-speed changes are implemented and instrumented, but the latest physical test still performed poorly at sharp corners. In particular, they have not reliably fixed opposite search direction or direction-dependent behavior when entering the same corner from both sides. Treat this as an active experiment, not a solved feature; details are recorded in [项目开发与实验日志.md](项目开发与实验日志.md).
+The direction latch, three-cycle direction confirmation, and edge-speed limit handle the great majority of sharp corners well enough for the current task. A small number of unusual entry angles may still produce imperfect steering or search behavior. Further sharp-corner work is therefore an optional optimization, not a required fix or a blocker for subsequent features. The earlier unsuccessful test and the later broader test result are both recorded in [项目开发与实验日志.md](项目开发与实验日志.md).
 
 Follow logs include `distance` and `obstacle`. The obstacle state is `CLEAR`, `BRAKE`, or `TURN_RIGHT`; transition events are also printed as `OBSTACLE ...` lines.
 
