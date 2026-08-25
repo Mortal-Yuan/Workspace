@@ -10,7 +10,7 @@ This file is the handoff summary for agents working in `smart-car-test`.
 - Current phase: bring-up and calibration of motors, encoders, infrared line sensors, and ultrasonic ranging.
 - Course direction from the lecture: line following and obstacle avoidance first, with camera/ball interaction and optional extensions in later phases.
 
-The detailed, experimentally confirmed motor and infrared mapping is in [电机与红外测试记录.md](电机与红外测试记录.md). Treat that document and the current source as authoritative when older notes disagree.
+The detailed, experimentally confirmed motor and infrared mapping is in [电机与红外测试记录.md](电机与红外测试记录.md). The complete development history, wiring summary, algorithm experiments, failures, and current open sharp-corner problem are in [项目开发与实验日志.md](项目开发与实验日志.md). Treat those documents and the current source as authoritative when older notes disagree.
 
 ## Local Reference Material
 
@@ -54,7 +54,7 @@ The supplied VS Code archive contains an ESP-IDF LED blink project, and the Ardu
 - Confirmed backward command is the exact inverse.
 - Infrared physical order, left to right: `OUT4/GPIO5`, `OUT3/GPIO4`, `OUT2/GPIO2`, `OUT1/GPIO1`.
 - Infrared outputs are active low: black/indicator on is `0`; white/indicator off is `1`.
-- HC-SR04 is currently assigned `Trig=GPIO6`, `Echo=GPIO13`. Telemetry has returned distance values, but ranging accuracy and the physical Echo level interface have not yet been formally validated.
+- HC-SR04 is assigned `Trig=GPIO6`, `Echo=GPIO13`. Non-blocking GPIO-edge timing feeds obstacle avoidance while line following. Ranging accuracy and the physical Echo level interface have not yet been formally validated.
 
 Important allocation changes from early notes:
 
@@ -67,12 +67,20 @@ Important allocation changes from early notes:
 Main source: `main/main.c`.
 
 - Motors are stopped at startup.
-- Default speed is `400/1000` (about 40% duty).
+- Manual motion defaults to `400/1000`. The rollback line-following baseline uses `320/1000` on `0110`/`1111` and `220/1000` through other nonzero patterns; curve commands are capped at `360/1000`.
 - `1`, `2`, `3` run A/right, B/rear, C/left individually.
 - `w`, `s`, `x` are confirmed forward, backward, and stop.
+- A brief press of the board's `BOOT` button (GPIO0, active low) or serial `f` starts four-sensor infrared line following; `x` or any manual motor command exits it. Holding `BOOT` during reset still enters the ESP32-S3 ROM download mode.
+- `m` toggles the real-time line monitor, which defaults to 10 Hz while following.
 - `r` runs a short A/B/C sequence.
 - `+` and `-` adjust speed.
-- Telemetry prints infrared raw bits in `OUT1 OUT2 OUT3 OUT4` order, ultrasonic distance, and A/B/C encoder counts every 500 ms.
+- Line following normalizes the active-low inputs and computes a proportional error using scaled physical left-to-right weights `-6, -2, +2, +6`.
+- It steers with motors A/C around the confirmed forward combination and keeps rear motor B stopped. Patterns `0110` and `1111` use straight speed; other nonzero patterns normally use curve speed. Patterns confined to one physical side use a `170/1000` base and `280/1000` command cap.
+- Search direction is independently latched. An opposite raw direction must persist for three 20 ms cycles before replacing the latch; unconfirmed opposite readings continue steering in the latched direction. For `0000`, the controller performs equal-and-opposite A/C in-place search at `280/1000` using this latch. Obstacle avoidance no longer overwrites it with a fixed right direction.
+- Latest physical-test result: the direction-latch experiment still performs poorly at sharp corners and does not reliably fix direction-dependent entry behavior. This is an instrumented experiment, not a solved feature. Preserve that conclusion when handing off or proposing the next algorithm.
+- Telemetry prints normalized detections in physical `L,LC,RC,R` order, ultrasonic distance, and A/B/C encoder counts every 500 ms. In this display, `1` means black detected.
+- Follow-mode logs include timestamp, control state, infrared pattern and stability count, active sensor count, current/last error, selected base speed, ultrasonic distance, obstacle state, limited A/B/C commands, and encoder counts.
+- While following, two consecutive HC-SR04 readings at or below 250 mm brake the car and start a `190/1000` right in-place avoidance turn. Two readings at or above 350 mm release avoidance after at least 850 ms, then infrared lost-line recovery searches in the same direction.
 - The current `a` and `d` implementations are inherited from the old two-wheel assumption and are not valid three-wheel turn commands. Do not use them until omnidirectional motion is calibrated.
 
 ## Build and Flash
@@ -100,8 +108,7 @@ The current installation uses ESP-IDF at `C:\esp\v5.4.4\esp-idf` and Espressif t
 
 ## Next Work
 
-1. Calibrate valid three-wheel left/right rotation and lateral movement combinations.
-2. Rename infrared definitions in code from numeric channel names to physical `LEFT`, `LEFT_CENTER`, `RIGHT_CENTER`, `RIGHT` names.
-3. Validate ultrasonic distance against known distances and document the actual Echo electrical connection.
-4. Build line-following control using the confirmed active-low infrared order.
-5. Add encoder-based speed balancing after motion directions are fully calibrated.
+1. Run line following on the real course and tune base speed, proportional gain, and lost-line search behavior.
+2. Calibrate valid three-wheel left/right rotation and lateral movement combinations.
+3. Validate ultrasonic distance and tune the 250/350 mm obstacle thresholds and turn timing on the real course.
+4. Add encoder-based speed balancing after motion directions are fully calibrated.
