@@ -55,6 +55,8 @@ The supplied VS Code archive contains an ESP-IDF LED blink project, and the Ardu
 - Infrared physical order, left to right: `OUT4/GPIO5`, `OUT3/GPIO4`, `OUT2/GPIO2`, `OUT1/GPIO1`.
 - Infrared outputs are active low: black/indicator on is `0`; white/indicator off is `1`.
 - HC-SR04 is assigned `Trig=GPIO6`, `Echo=GPIO13`. Non-blocking GPIO-edge timing feeds obstacle avoidance while line following. Ranging accuracy and the physical Echo level interface have not yet been formally validated.
+- The current uncommitted UART0 diagnostic uses `TX=GPIO43` and `RX=GPIO44`
+  at 115200 bit/s, so those pins are not available for MPU6500 I2C.
 
 Important allocation changes from early notes:
 
@@ -64,24 +66,77 @@ Important allocation changes from early notes:
 
 ## Source Behavior
 
-Main source: `main/main.c`.
+The firmware is modular. `main/app_main.c` is the entry point;
+`main/app/app_controller.c` owns top-level mode and final motion arbitration;
+hardware access is isolated under `main/drivers` and `main/platform`; pure
+control policies are under `main/control`. See `固件模块化重构计划.md` for the
+dependency and extension contracts.
 
 - Motors are stopped at startup.
-- Manual motion defaults to `400/1000`. The rollback line-following baseline uses `320/1000` on `0110`/`1111` and `220/1000` through other nonzero patterns; curve commands are capped at `360/1000`.
+- Manual motion and the adjustable line-speed ceiling default to `450/1000`.
+  Line following uses `420/1000` on
+  `0110`/`1111`, `310/1000` on ordinary curves, and `280/1000` on one-sided
+  edge patterns. Curve commands are capped at `500/1000` or `450/1000`, and
+  nonzero curve-wheel commands have a `220/1000` minimum after scaling.
+- Line-follow motors A/C use an encoder-free starting boost: on initial motion
+  or a direction reversal, a requested magnitude below `500/1000` is raised to
+  `500/1000` for 150 ms, then returns to the controller request. A true zero for
+  120 ms rearms a same-direction boost. Avoidance/manual commands bypass this
+  helper. Do not add encoder speed control until motor-induced encoder glitches
+  are filtered or electrically corrected.
 - `1`, `2`, `3` run A/right, B/rear, C/left individually.
 - `w`, `s`, `x` are confirmed forward, backward, and stop.
-- A brief press of the board's `BOOT` button (GPIO0, active low) or serial `f` starts four-sensor infrared line following; `x` or any manual motor command exits it. Holding `BOOT` during reset still enters the ESP32-S3 ROM download mode.
+- A brief press of the board's `BOOT` button (GPIO0, active low) starts the
+  combined line-follow/obstacle supervisor and is ignored while it is already
+  active. Pressing the hardware `RESET`/EN button alone resets the MCU; startup
+  immediately writes zero motor commands and disables motor-driver EN/STBY, so
+  RESET is the physical stop control.
+  Serial `f` starts and `x` stops; any manual motor command exits autonomous
+  mode. Holding `BOOT` during reset still enters the ESP32-S3 ROM download mode.
+- BOOT has a 50 ms stable-level debounce, an 80 ms release-to-rearm time, and a
+  500 ms startup guard. A valid press during the guard is queued. BOOT held at
+  startup is not armed until it is released, preventing unintended startup.
+  Top-level operation uses explicit
+  `IDLE/AUTONOMOUS/MANUAL/SELF_TEST/FAULT` modes; BOOT cannot be blocked by a
+  stale combination of run flags.
+  All-zero motor commands disable EN/STBY, and nonzero commands enable it only
+  after directions/PWM are written. An external roughly 10 kOhm EN/STBY
+  pull-down is still recommended for guaranteed disable before firmware starts
+  and in ROM download mode; software cannot guarantee that reset interval.
 - `m` toggles the real-time line monitor, which defaults to 10 Hz while following.
 - `r` runs a short A/B/C sequence.
 - `+` and `-` adjust speed.
 - Line following normalizes the active-low inputs and computes a proportional error using scaled physical left-to-right weights `-6, -2, +2, +6`.
-- It steers with motors A/C around the confirmed forward combination and keeps rear motor B stopped. Patterns `0110` and `1111` use straight speed; other nonzero patterns normally use curve speed. Patterns confined to one physical side use a `170/1000` base and `280/1000` command cap.
-- Search direction is independently latched. An opposite raw direction must persist for three 20 ms cycles before replacing the latch; unconfirmed opposite readings continue steering in the latched direction. For `0000`, the controller performs equal-and-opposite A/C in-place search at `280/1000` using this latch. Obstacle avoidance no longer overwrites it with a fixed right direction.
+- It steers with motors A/C around the confirmed forward combination and keeps
+  rear motor B stopped because B direction is not yet calibrated. Search
+  direction is independently latched; for `0000`, equal-and-opposite A/C search
+  runs at `360/1000`.
 - Latest physical-test result: after broader testing, the direction latch, three-cycle confirmation, and edge-speed limit handle the great majority of sharp corners sufficiently well. Rare direction-dependent entry cases remain an optional optimization point, not a required fix or blocker. Preserve both the earlier poor test and this newer conclusion in future handoffs.
 - Telemetry prints normalized detections in physical `L,LC,RC,R` order, ultrasonic distance, and A/B/C encoder counts every 500 ms. In this display, `1` means black detected.
 - Follow-mode logs include timestamp, control state, infrared pattern and stability count, active sensor count, current/last error, selected base speed, ultrasonic distance, obstacle state, limited A/B/C commands, and encoder counts.
-- While following, two consecutive HC-SR04 readings at or below 250 mm brake the car and start a `190/1000` right in-place avoidance turn. Two readings at or above 350 mm release avoidance after at least 850 ms, then infrared lost-line recovery searches in the same direction.
-- The current `a` and `d` implementations are inherited from the old two-wheel assumption and are not valid three-wheel turn commands. Do not use them until omnidirectional motion is calibrated.
+- HC-SR04 samples have `VALID/OUTLIER/LOST` quality, actual Echo edge-level
+  validation, a three-sample median, and jump confirmation. Automatic bypass
+  is enabled for bounded field calibration. The first raw Echo from 20 through
+  200 mm stops immediately, then the active rectangular sequence is
+  `BRAKE -> LEFT_EDGE -> LEFT_CLEARANCE -> FORWARD_BYPASS -> RIGHT_LINE ->
+  LINE_CONFIRM`, with settle states and fail-safe timeouts. Its 800 ms lateral
+  clearance and 2500 ms forward duration are provisional field parameters, not
+  yet measured 10 cm and 40 cm distances.
+- The first 2026-08-26 post-flash UART diagnostic showed GPIO13 Echo high, raw
+  8113--8116 mm invalid pulses, and repeated timeouts while the ultrasonic heads
+  were resting against the tabletop. After normal positioning, a 10-second
+  retest produced only `VALID` 231--263 mm samples, Echo low at idle, and zero
+  timeouts. The failure was the blocked/near-field acoustic setup, not a GPIO13
+  wiring fault. The module is currently powered from 3.3 V and Echo is direct;
+  use a divider if changing it to 5 V supply.
+- The current `a` and `d` implementations are inherited from the old two-wheel
+  assumption and are not valid three-wheel strafe commands. A centralized kiwi
+  inverse-kinematics module now derives candidate left strafe as
+  `A=-0.866S, B=-S, C=+0.866S` before empirical dead-zone and yaw correction.
+  B positive has a 460 minimum; pure lateral A/C have a 300 minimum; lateral
+  yaw compensation is 20%. Automatic bypass is enabled for bounded field
+  calibration after `q/e` confirmed physical direction. `q/e` run for 1000 ms; `g` runs the verified
+  forward basis at 400/1000 for 1000 ms for ruler calibration.
 
 ## Build and Flash
 
@@ -90,13 +145,15 @@ Normal ESP-IDF workflow:
 ```powershell
 idf.py set-target esp32s3
 idf.py build
-idf.py -p COM5 flash monitor
+idf.py -p COM3 flash monitor
 ```
 
-On the current machine, the board is normally on `COM5`. Standard flashing has previously timed out while uploading the stub. The reliable fallback is:
+On 2026-08-26 the board enumerated as CP210x `COM3`; always rediscover the port
+instead of assuming it. Standard flashing has previously timed out while
+uploading the stub. The reliable fallback is:
 
 ```powershell
-python -m esptool --chip esp32s3 -p COM5 -b 115200 `
+python -m esptool --chip esp32s3 -p COM3 -b 115200 `
   --before default_reset --after hard_reset --no-stub write_flash `
   --flash_mode dio --flash_freq 80m --flash_size 2MB `
   0x0 build/bootloader/bootloader.bin `
@@ -108,7 +165,14 @@ The current installation uses ESP-IDF at `C:\esp\v5.4.4\esp-idf` and Espressif t
 
 ## Next Work
 
-1. Run line following on the real course and tune base speed, proportional gain, and lost-line search behavior.
-2. Calibrate valid three-wheel left/right rotation and lateral movement combinations.
-3. Validate ultrasonic distance and tune the 250/350 mm obstacle thresholds and turn timing on the real course.
-4. Add encoder-based speed balancing after motion directions are fully calibrated.
+1. Field-test the enabled rectangular bypass with space to stop it by RESET or
+   serial `x`; capture state transitions and physical displacement.
+2. On the competition surface, measure at least five `q/e` displacements and
+   five `g` forward displacements. Use medians to calibrate the 10 cm lateral
+   clearance and 40 cm forward durations.
+3. Replace the provisional 800/2500 ms values with the measured 10/40 cm
+   medians. The first line detection already brakes before a five-cycle
+   stationary confirmation; edge and line searches have 5 s limits.
+4. Filter the motor-induced encoder glitches before replacing time-calibrated
+   segments with encoder distance control. Add MPU6500 only if heading drift
+   makes the open-loop rectangular path insufficiently repeatable.
