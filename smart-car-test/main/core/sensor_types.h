@@ -24,6 +24,8 @@ typedef enum {
     ULTRASONIC_QUALITY_OUTLIER,
     ULTRASONIC_QUALITY_LOST,
     ULTRASONIC_QUALITY_INVALID,
+    /* A complete Echo pulse was received, but it represents >4 m/no return. */
+    ULTRASONIC_QUALITY_NO_RETURN,
 } ultrasonic_quality_t;
 
 typedef struct {

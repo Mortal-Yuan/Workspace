@@ -16,13 +16,6 @@ typedef enum {
 } line_state_t;
 
 typedef struct {
-    int last_direction;
-    int64_t zero_since_us;
-    int64_t boost_until_us;
-    bool armed;
-} line_boost_state_t;
-
-typedef struct {
     line_follow_config_t config;
     line_state_t state;
     line_sensor_sample_t sensors;
@@ -38,10 +31,10 @@ typedef struct {
     unsigned direction_candidate_count;
     unsigned lost_count;
     int base_speed;
-    line_boost_state_t boost_a;
-    line_boost_state_t boost_c;
-    bool boost_a_active;
-    bool boost_c_active;
+    int previous_target_a;
+    int previous_target_c;
+    int64_t assist_a_until_us;
+    int64_t assist_c_until_us;
 } line_follow_t;
 
 void line_follow_init(line_follow_t *controller,

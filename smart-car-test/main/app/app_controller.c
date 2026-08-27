@@ -13,6 +13,7 @@
 enum {
     DEGRADED_ENCODER = 1U << 0,
     DEGRADED_DIAGNOSTICS = 1U << 1,
+    DEGRADED_DISPLAY = 1U << 2,
     STRAFE_CALIBRATION_DURATION_US = 1000000,
 };
 
@@ -26,7 +27,21 @@ typedef struct {
     int speed_delta;
     bool clear_encoder;
     bool help;
+    bool enable_display;
 } command_intents_t;
+
+static void enable_status_display(app_controller_t *controller)
+{
+    if (!controller->display_ready ||
+        status_display_is_requested(&controller->display)) {
+        return;
+    }
+    /* GPIO20 changes from USB D+ to SPI MOSI after this point. */
+    if (controller->diagnostics_ready) {
+        diagnostics_disable_usb(&controller->diagnostics);
+    }
+    status_display_enable(&controller->display);
+}
 
 static void publish_event(app_controller_t *controller,
                           diagnostic_event_kind_t kind,
@@ -114,6 +129,7 @@ static void start_autonomy(app_controller_t *controller, int64_t now_us,
     controller->mode = APP_MODE_AUTONOMOUS;
     publish_event(controller, DIAGNOSTIC_EVENT_MODE,
                   APP_MODE_AUTONOMOUS, 0, "autonomy_start", now_us);
+    enable_status_display(controller);
 }
 
 static command_intents_t parse_commands(command_batch_t batch,
@@ -136,6 +152,7 @@ static command_intents_t parse_commands(command_batch_t batch,
         case '-': intents.speed_delta -= 50; break;
         case 'c': intents.clear_encoder = true; break;
         case 'h': intents.help = true; break;
+        case 'v': intents.enable_display = true; break;
         default: break;
         }
     }
@@ -283,8 +300,11 @@ static void apply_intents(app_controller_t *controller,
     if (intents.help) {
         publish_event(controller, DIAGNOSTIC_EVENT_INFO, 0,
                       controller->speed,
-                      "q/e strafe; j/k B-/B+; g forward; x stop",
+                      "q/e strafe; g forward; v display; x stop",
                       now_us);
+    }
+    if (intents.enable_display && !intents.stop) {
+        enable_status_display(controller);
     }
     if (intents.stop) {
         controller->mode = controller->fault_bitmap == 0 ?
@@ -311,7 +331,10 @@ static void apply_intents(app_controller_t *controller,
 
 static void publish_snapshot(app_controller_t *controller, int64_t now_us)
 {
-    if (!controller->diagnostics_ready || now_us < controller->next_snapshot_us) {
+    const bool display_requested = controller->display_ready &&
+        status_display_is_requested(&controller->display);
+    if ((!controller->diagnostics_ready && !display_requested) ||
+        now_us < controller->next_snapshot_us) {
         return;
     }
     const encoder_snapshot_t encoder = encoder_snapshot(&controller->encoder);
@@ -326,8 +349,6 @@ static void publish_snapshot(app_controller_t *controller, int64_t now_us)
         .line_error = controller->line_follow.error,
         .line_control_error = controller->line_follow.control_error,
         .line_base_speed = controller->line_follow.base_speed,
-        .boost_a = controller->line_follow.boost_a_active,
-        .boost_c = controller->line_follow.boost_c_active,
         .ultrasonic = ultrasonic_snapshot(&controller->ultrasonic),
         .motor = motor_driver_command(&controller->motor),
         .encoder_a = encoder.a,
@@ -339,7 +360,23 @@ static void publish_snapshot(app_controller_t *controller, int64_t now_us)
         .control_overruns = controller->control_overruns,
         .diagnostic_drops = diagnostics_drop_count(&controller->diagnostics),
     };
-    diagnostics_publish_snapshot(&controller->diagnostics, &snapshot);
+    if (controller->diagnostics_ready) {
+        diagnostics_publish_snapshot(&controller->diagnostics, &snapshot);
+    }
+    if (display_requested) {
+        const status_display_snapshot_t display_snapshot = {
+            .mode = controller->mode,
+            .obstacle_state = controller->obstacle.state,
+            .line_pattern = line_sensor_pattern(controller->latest_line),
+            .ultrasonic_mm = snapshot.ultrasonic.filtered_mm,
+            .motor = snapshot.motor,
+            .finished = controller->obstacle.state ==
+                        OBSTACLE_STATE_FINISHED,
+            .failsafe = controller->obstacle.state ==
+                        OBSTACLE_STATE_FAILSAFE,
+        };
+        status_display_publish(&controller->display, &display_snapshot);
+    }
     controller->next_snapshot_us = now_us +
         (controller->mode == APP_MODE_AUTONOMOUS && controller->line_monitor ?
          controller->config->line_monitor_period_ms :
@@ -454,6 +491,11 @@ bool app_controller_init(app_controller_t *controller,
         controller->diagnostics_ready = true;
     } else {
         controller->degraded_bitmap |= DEGRADED_DIAGNOSTICS;
+    }
+    if (status_display_init(&controller->display) == ESP_OK) {
+        controller->display_ready = true;
+    } else {
+        controller->degraded_bitmap |= DEGRADED_DISPLAY;
     }
     if (motor_result != MOTOR_RESULT_OK) {
         set_fault(controller, FAULT_SOURCE_MOTOR, motor_result,

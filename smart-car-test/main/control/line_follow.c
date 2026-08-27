@@ -25,53 +25,39 @@ static bool is_side_only(uint8_t pattern)
     return left != right;
 }
 
-static void reset_boost(line_follow_t *controller)
+static void reset_drive_assist(line_follow_t *controller)
 {
-    controller->boost_a = (line_boost_state_t) {.armed = true};
-    controller->boost_c = (line_boost_state_t) {.armed = true};
-    controller->boost_a_active = false;
-    controller->boost_c_active = false;
+    controller->previous_target_a = 0;
+    controller->previous_target_c = 0;
+    controller->assist_a_until_us = 0;
+    controller->assist_c_until_us = 0;
 }
 
-static int apply_boost(const line_follow_config_t *config, int command,
-                       line_boost_state_t *state, bool *active,
-                       int64_t now_us)
+static int apply_drive_assist(line_follow_t *controller, int target,
+                              int *previous_target,
+                              int64_t *assist_until_us, int64_t now_us)
 {
-    const int direction = sign_of(command);
-    if (direction == 0) {
-        if (state->last_direction != 0) {
-            state->zero_since_us = now_us;
-        }
-        state->last_direction = 0;
-        state->boost_until_us = 0;
-        if (!state->armed && state->zero_since_us > 0 &&
-            now_us - state->zero_since_us >=
-                config->boost_rearm_ms * 1000LL) {
-            state->armed = true;
-        }
-        *active = false;
-        return 0;
+    const int previous = *previous_target;
+    *previous_target = target;
+    if (abs(target) < controller->config.drive_assist_threshold) {
+        *assist_until_us = 0;
+        return target;
     }
-    if (state->last_direction != 0 && direction != state->last_direction) {
-        state->armed = true;
-    } else if (state->last_direction == 0 && !state->armed &&
-               state->zero_since_us > 0 &&
-               now_us - state->zero_since_us >=
-                   config->boost_rearm_ms * 1000LL) {
-        state->armed = true;
+
+    const bool became_drive_wheel =
+        abs(previous) < controller->config.drive_assist_threshold;
+    const bool reversed = sign_of(previous) != sign_of(target);
+    if (became_drive_wheel || reversed) {
+        *assist_until_us = now_us +
+            controller->config.drive_assist_ms * 1000LL;
     }
-    if (state->armed) {
-        state->boost_until_us = now_us + config->boost_ms * 1000LL;
-        state->armed = false;
+    if (now_us < *assist_until_us) {
+        const int assisted = abs(target) >
+            controller->config.drive_assist_command ? abs(target) :
+            controller->config.drive_assist_command;
+        return sign_of(target) * assisted;
     }
-    state->last_direction = direction;
-    if (now_us < state->boost_until_us &&
-        abs(command) < config->boost_command) {
-        *active = true;
-        return direction * config->boost_command;
-    }
-    *active = false;
-    return command;
+    return target;
 }
 
 static void update_direction_lock(line_follow_t *controller, int direction)
@@ -115,26 +101,11 @@ static void update_direction_lock(line_follow_t *controller, int direction)
     }
 }
 
-static motor_command_t boosted(line_follow_t *controller, int a, int c,
-                               int64_t now_us)
-{
-    return (motor_command_t) {
-        .a = (int16_t)apply_boost(&controller->config, a,
-                                  &controller->boost_a,
-                                  &controller->boost_a_active, now_us),
-        .b = 0,
-        .c = (int16_t)apply_boost(&controller->config, c,
-                                  &controller->boost_c,
-                                  &controller->boost_c_active, now_us),
-    };
-}
-
 void line_follow_init(line_follow_t *controller,
                       const line_follow_config_t *config)
 {
     memset(controller, 0, sizeof(*controller));
     controller->config = *config;
-    reset_boost(controller);
 }
 
 void line_follow_reset_for_start(line_follow_t *controller,
@@ -147,21 +118,21 @@ void line_follow_reset_for_start(line_follow_t *controller,
     controller->pattern = line_sensor_pattern(initial);
     controller->previous_pattern = controller->pattern;
     controller->state = LINE_STATE_IDLE;
-    reset_boost(controller);
 }
 
 void line_follow_suspend(line_follow_t *controller)
 {
-    reset_boost(controller);
     controller->state = LINE_STATE_IDLE;
     controller->base_speed = 0;
     controller->control_error = 0;
+    reset_drive_assist(controller);
 }
 
 void line_follow_resume(line_follow_t *controller)
 {
     controller->lost_count = 0;
     controller->pattern_stable_count = 0;
+    reset_drive_assist(controller);
 }
 
 motor_command_t line_follow_step(line_follow_t *controller,
@@ -191,11 +162,15 @@ motor_command_t line_follow_step(line_follow_t *controller,
                               controller->locked_direction;
         controller->state = direction < 0 ? LINE_STATE_SEARCH_LEFT :
                                             LINE_STATE_SEARCH_RIGHT;
-        return direction < 0 ?
-            boosted(controller, -controller->config.search_speed,
-                    controller->config.search_speed, now_us) :
-            boosted(controller, controller->config.search_speed,
-                    -controller->config.search_speed, now_us);
+        int a = direction * controller->config.search_speed;
+        int c = -a;
+        a = apply_drive_assist(controller, a,
+                               &controller->previous_target_a,
+                               &controller->assist_a_until_us, now_us);
+        c = apply_drive_assist(controller, c,
+                               &controller->previous_target_c,
+                               &controller->assist_c_until_us, now_us);
+        return (motor_command_t) {(int16_t)a, 0, (int16_t)c};
     }
 
     controller->lost_count = 0;
@@ -241,12 +216,22 @@ motor_command_t line_follow_step(line_follow_t *controller,
             a = a * limit / maximum;
             c = c * limit / maximum;
         }
-        if (a != 0 && abs(a) < controller->config.minimum_active) {
-            a = sign_of(a) * controller->config.minimum_active;
-        }
-        if (c != 0 && abs(c) < controller->config.minimum_active) {
-            c = sign_of(c) * controller->config.minimum_active;
-        }
     }
-    return boosted(controller, a, c, now_us);
+    /* A single active sensor demands a tight turn. Keep its inside wheel
+     * above the measured loaded dead zone. The sign checks preserve an
+     * opposite direction lock while it is being confirmed. */
+    if ((pattern == 0x01 || pattern == 0x02) && a > 0 &&
+        a < controller->config.single_sensor_inner_command) {
+        a = controller->config.single_sensor_inner_command;
+    } else if ((pattern == 0x04 || pattern == 0x08) && c > 0 &&
+               c < controller->config.single_sensor_inner_command) {
+        c = controller->config.single_sensor_inner_command;
+    }
+    a = apply_drive_assist(controller, a,
+                           &controller->previous_target_a,
+                           &controller->assist_a_until_us, now_us);
+    c = apply_drive_assist(controller, c,
+                           &controller->previous_target_c,
+                           &controller->assist_c_until_us, now_us);
+    return (motor_command_t) {(int16_t)a, 0, (int16_t)c};
 }

@@ -198,7 +198,7 @@ static void diagnostics_task(void *arg)
                 scratch, sizeof(scratch),
                 "STATUS t=%" PRId64 "ms mode=%s obstacle=%u progress=%u "
                 "IR=%d%d%d%d pattern=%x line=%d err=%d/%d base=%d "
-                "boost=%d,%d us=%" PRId32 "/%" PRId32
+                "us=%" PRId32 "/%" PRId32
                 " q=%d echo=%d wait=%d timeout=%" PRIu32
                 " anomaly=%" PRIu32 " cmd=%d,%d,%d "
                 "button=%d/%d/%d encoder=%" PRId64 ",%" PRId64
@@ -209,8 +209,7 @@ static void diagnostics_task(void *arg)
                 snapshot.line.right_center, snapshot.line.right,
                 (unsigned)snapshot.line_pattern, snapshot.line_state,
                 snapshot.line_error, snapshot.line_control_error,
-                snapshot.line_base_speed, snapshot.boost_a,
-                snapshot.boost_c,
+                snapshot.line_base_speed,
                 snapshot.ultrasonic.raw_mm,
                 snapshot.ultrasonic.filtered_mm,
                 snapshot.ultrasonic.quality, snapshot.ultrasonic.echo_high,
@@ -320,6 +319,20 @@ command_batch_t diagnostics_poll_commands(diagnostics_t *diagnostics)
         if (count > 0) batch.count += (uint8_t)count;
     }
     return batch;
+}
+
+void diagnostics_disable_usb(diagnostics_t *diagnostics)
+{
+    if (diagnostics == NULL) return;
+    /*
+     * GPIO20 is about to leave the fixed USB Serial/JTAG function.  Keep the
+     * driver installed so RESET can recover cleanly, but stop all task access
+     * before the SPI display claims the pin.
+     */
+    diagnostics->usb_ready = false;
+    diagnostics->usb.fault_current_valid = false;
+    diagnostics->usb.fault_next_valid = false;
+    diagnostics->usb.normal_valid = false;
 }
 
 void diagnostics_publish_fault(diagnostics_t *diagnostics,

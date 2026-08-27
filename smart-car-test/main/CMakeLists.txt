@@ -11,6 +11,7 @@ idf_component_register(
         "drivers/line_sensor.c"
         "drivers/motor_driver.c"
         "drivers/start_button.c"
+        "drivers/status_display.c"
         "drivers/ultrasonic.c"
         "platform/motor_hal_espidf.c"
         "platform/platform_init.c"
@@ -22,6 +23,6 @@ idf_component_register(
         "diagnostics"
         "drivers"
         "platform"
-    REQUIRES esp_driver_gpio esp_driver_ledc esp_driver_uart
+    REQUIRES esp_driver_gpio esp_driver_ledc esp_driver_spi esp_driver_uart
              esp_driver_usb_serial_jtag esp_timer
 )

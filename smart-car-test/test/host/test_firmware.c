@@ -166,6 +166,7 @@ static void test_kiwi_kinematics(void)
     const kiwi_kinematics_config_t ideal = {
         .lateral_side_permille = 866,
         .lateral_yaw_compensation_permille = 0,
+        .right_lateral_yaw_compensation_permille = 0,
         .lateral_side_wheel_minimum = 0,
         .motor_b_positive_minimum = 0,
     };
@@ -195,100 +196,237 @@ static void test_kiwi_kinematics(void)
 
     command = kiwi_inverse_kinematics(
         (body_motion_command_t) {.left = 380}, &APP_CONFIG.kinematics);
-    assert(command.a == -300 && command.b == -456 && command.c == 300);
+    assert(APP_CONFIG.kinematics.lateral_yaw_compensation_permille == 500);
+    assert(command.a == -300 && command.b == -570 && command.c == 300);
+    command = kiwi_inverse_kinematics(
+        (body_motion_command_t) {.left = 500}, &APP_CONFIG.kinematics);
+    assert(command.a == -300 && command.b == -750 && command.c == 300);
     command = kiwi_inverse_kinematics(
         (body_motion_command_t) {.left = -380}, &APP_CONFIG.kinematics);
-    assert(command.a == 300 && command.b == 460 && command.c == -300);
+    assert(APP_CONFIG.kinematics.right_lateral_yaw_compensation_permille ==
+           500);
+    assert(command.a == 300 && command.b == 570 && command.c == -300);
+    command = kiwi_inverse_kinematics(
+        (body_motion_command_t) {.left = -500}, &APP_CONFIG.kinematics);
+    assert(command.a == 300 && command.b == 750 && command.c == -300);
 }
 
 static void test_line_follow_behavior(void)
 {
+    assert(APP_CONFIG.line.straight_speed == 360);
+    assert(APP_CONFIG.line.curve_speed == 250);
+    assert(APP_CONFIG.line.curve_max == 400);
+    assert(APP_CONFIG.line.edge_speed == 190);
+    assert(APP_CONFIG.line.edge_max == 320);
+    assert(APP_CONFIG.line.search_speed == 320);
+    assert(APP_CONFIG.line.kp == 100);
+    assert(APP_CONFIG.line.max_correction == 250);
+    assert(APP_CONFIG.line.direction_confirm_count == 3);
+    assert(APP_CONFIG.line.direction_hold_error == 4);
+    assert(APP_CONFIG.line.single_sensor_inner_command == 100);
+    assert(APP_CONFIG.line.drive_assist_threshold == 200);
+    assert(APP_CONFIG.line.drive_assist_command == 500);
+    assert(APP_CONFIG.line.drive_assist_ms == 150);
+    assert(APP_CONFIG.default_speed == 400);
+
     line_follow_t controller;
     line_follow_init(&controller, &APP_CONFIG.line);
     line_follow_reset_for_start(&controller, line(false, true, true, false));
 
     motor_command_t command = line_follow_step(
-        &controller, line(false, true, true, false), 450, 0);
+        &controller, line(false, true, true, false), 400, 0);
     assert(command.a == -500 && command.b == 0 && command.c == -500);
     command = line_follow_step(
-        &controller, line(false, true, true, false), 450, 160000);
-    assert(command.a == -420 && command.c == -420);
+        &controller, line(false, true, true, false), 400, 149999);
+    assert(command.a == -500 && command.c == -500);
+    command = line_follow_step(
+        &controller, line(false, true, true, false), 400, 150000);
+    assert(command.a == -360 && command.c == -360);
 
     for (int index = 0; index < 3; ++index) {
         command = line_follow_step(
-            &controller, line(false, false, false, true), 450,
+            &controller, line(false, false, false, true), 400,
             200000 + index * 20000);
+        assert(command.a == 100 && command.b == 0 && command.c == -320);
     }
     assert(controller.locked_direction == 1);
+    assert(controller.error == 6 && controller.control_error == 6);
+    command = line_follow_step(&controller, line(false, true, false, false),
+                               400, 260000);
+    assert(command.a == 43 && command.b == 0 && command.c == -320);
+    assert(controller.locked_direction == 1);
+    assert(controller.control_error == 4);
     command = line_follow_step(&controller, line(false, false, false, false),
-                               450, 300000);
-    assert(command.a == 500 && command.b == 0 && command.c == -360);
+                               400, 300000);
+    assert(command.a == 500 && command.b == 0 && command.c == -320);
+    assert(controller.state == LINE_STATE_SEARCH_RIGHT);
     command = line_follow_step(&controller, line(false, false, false, false),
-                               450, 460000);
-    assert(command.a == 360 && command.b == 0 && command.c == -360);
+                               400, 460000);
+    assert(command.a == 320 && command.b == 0 && command.c == -320);
 
     line_follow_reset_for_start(&controller, line(true, false, false, false));
-    (void)line_follow_step(&controller, line(true, false, false, false),
-                           450, 0);
     command = line_follow_step(&controller, line(true, false, false, false),
-                               450, 160000);
-    assert(command.a == -450 && command.c == -220);
+                               400, 0);
+    assert(command.a == -500 && command.b == 0 && command.c == 100);
+    command = line_follow_step(&controller, line(true, false, false, false),
+                               400, 150000);
+    assert(command.a == -320 && command.c == 100);
+
+    line_follow_reset_for_start(&controller, line(false, true, true, true));
+    command = line_follow_step(&controller, line(false, true, true, true),
+                               400, 0);
+    assert(command.a == -44 && command.b == 0 && command.c == -500);
+
+    command = line_follow_step(&controller, line(false, true, true, true),
+                               400, 150000);
+    assert(command.a == -44 && command.b == 0 && command.c == -400);
+
+    command = line_follow_step(&controller, line(true, false, true, false),
+                               400, 170000);
+    assert(command.a == -500 && command.b == 0 && command.c == -44);
+
+    line_follow_reset_for_start(&controller, line(false, false, true, false));
+    command = line_follow_step(&controller, line(false, false, true, false),
+                               400, 0);
+    assert(command.a == 100 && command.b == 0 && command.c == -500);
+    command = line_follow_step(&controller, line(false, false, true, false),
+                               400, 150000);
+    assert(command.a == 100 && command.b == 0 && command.c == -320);
+
+    line_follow_reset_for_start(&controller, line(false, true, false, false));
+    command = line_follow_step(&controller, line(false, true, false, false),
+                               400, 0);
+    assert(command.a == -500 && command.b == 0 && command.c == 100);
+    command = line_follow_step(&controller, line(false, true, false, false),
+                               400, 150000);
+    assert(command.a == -320 && command.b == 0 && command.c == 100);
+
+    line_follow_reset_for_start(&controller, line(false, false, false, false));
+    command = line_follow_step(&controller, line(false, false, false, false),
+                               400, 0);
+    assert(command.a == -500 && command.b == 0 && command.c == 500);
+    assert(controller.state == LINE_STATE_SEARCH_LEFT);
+    command = line_follow_step(&controller, line(false, false, false, false),
+                               400, 150000);
+    assert(command.a == -320 && command.b == 0 && command.c == 320);
+
+    line_follow_suspend(&controller);
+    line_follow_resume(&controller);
+    command = line_follow_step(&controller, line(false, true, true, false),
+                               400, 200000);
+    assert(command.a == -500 && command.b == 0 && command.c == -500);
 }
 
 static void test_obstacle_supervisor(void)
 {
     obstacle_config_t config = APP_CONFIG.obstacle;
+    assert(config.stop_mm == 100);
+    assert(config.no_echo_limit == 3);
+    assert(APP_CONFIG.ultrasonic.timeout_us == 45000);
+    assert(APP_CONFIG.ultrasonic.period_ms == 70);
+    assert(config.lateral_speed == 380);
+    assert(config.lateral_start_speed == 500);
+    assert(config.left_strafe_ms == 1231);
+    assert(config.forward_drive_ms == 1191);
+    assert(config.right_strafe_ms == 960);
     config.bypass_enabled = false;
     obstacle_supervisor_t supervisor;
     obstacle_supervisor_init(&supervisor, &config);
+
+    /* A disconnected or silent sensor must never authorize startup. */
     ultrasonic_event_t event = ultrasonic(
-        1, true, 300, 300, ULTRASONIC_QUALITY_VALID, false, false);
+        1, false, -1, -1, ULTRASONIC_QUALITY_OUTLIER, false, false);
     obstacle_decision_t decision = obstacle_step(&supervisor, &event);
-    assert(decision.policy == MOTION_POLICY_BLOCK && decision.clear_count == 1);
+    assert(decision.policy == MOTION_POLICY_BLOCK);
+    assert(supervisor.state == OBSTACLE_STATE_SENSOR_CHECK);
     event.seq = 2;
     decision = obstacle_step(&supervisor, &event);
-    assert(decision.policy == MOTION_POLICY_BLOCK && decision.clear_count == 2);
+    assert(decision.policy == MOTION_POLICY_BLOCK);
     event.seq = 3;
+    event.quality = ULTRASONIC_QUALITY_LOST;
+    decision = obstacle_step(&supervisor, &event);
+    assert(decision.policy == MOTION_POLICY_BLOCK);
+    assert(supervisor.state == OBSTACLE_STATE_SENSOR_CHECK);
+    assert(decision.clear_count == 0);
+
+    /* Startup requires three consecutive valid far observations. */
+    event = ultrasonic(
+        4, true, 300, 300, ULTRASONIC_QUALITY_VALID, false, false);
+    decision = obstacle_step(&supervisor, &event);
+    assert(decision.policy == MOTION_POLICY_BLOCK && decision.clear_count == 1);
+    event.seq = 5;
+    decision = obstacle_step(&supervisor, &event);
+    assert(decision.policy == MOTION_POLICY_BLOCK && decision.clear_count == 2);
+    event.seq = 6;
     decision = obstacle_step(&supervisor, &event);
     assert(decision.policy == MOTION_POLICY_LINE_FOLLOW);
     assert(decision.transition == OBSTACLE_TRANSITION_TO_CLEAR);
 
-    event = ultrasonic(4, true, 200, 300, ULTRASONIC_QUALITY_OUTLIER,
+    event = ultrasonic(7, true, 101, 101, ULTRASONIC_QUALITY_VALID,
+                       false, false);
+    decision = obstacle_step(&supervisor, &event);
+    assert(decision.policy == MOTION_POLICY_LINE_FOLLOW);
+    assert(supervisor.state == OBSTACLE_STATE_CLEAR);
+
+    /* Open space, completed no-return pulses and clean jumps keep running. */
+    event = ultrasonic(8, true, 6500, 101, ULTRASONIC_QUALITY_NO_RETURN,
+                       false, false);
+    decision = obstacle_step(&supervisor, &event);
+    assert(decision.policy == MOTION_POLICY_LINE_FOLLOW);
+    assert(supervisor.state == OBSTACLE_STATE_CLEAR);
+    assert(supervisor.no_echo_count == 0);
+    event.seq = 9;
+    decision = obstacle_step(&supervisor, &event);
+    assert(decision.policy == MOTION_POLICY_LINE_FOLLOW);
+    assert(supervisor.state == OBSTACLE_STATE_CLEAR);
+    event = ultrasonic(10, false, -1, 101, ULTRASONIC_QUALITY_LOST,
+                       false, false);
+    decision = obstacle_step(&supervisor, &event);
+    assert(decision.policy == MOTION_POLICY_LINE_FOLLOW);
+    assert(supervisor.state == OBSTACLE_STATE_CLEAR);
+    event = ultrasonic(11, true, 1324, 775, ULTRASONIC_QUALITY_OUTLIER,
+                       false, false);
+    decision = obstacle_step(&supervisor, &event);
+    assert(decision.policy == MOTION_POLICY_LINE_FOLLOW);
+    assert(supervisor.state == OBSTACLE_STATE_CLEAR);
+
+    /* A near raw Echo still stops immediately, even if it is an outlier. */
+    event = ultrasonic(12, true, 100, 300, ULTRASONIC_QUALITY_OUTLIER,
                        false, false);
     decision = obstacle_step(&supervisor, &event);
     assert(decision.policy == MOTION_POLICY_BLOCK);
     assert(decision.transition == OBSTACLE_TRANSITION_TO_WAIT_CLEAR);
+    assert(decision.reason == OBSTACLE_REASON_NEAR);
     assert(decision.line_action == LINE_ACTION_SUSPEND);
 
-    event = ultrasonic(5, false, -1, 300, ULTRASONIC_QUALITY_OUTLIER,
-                       false, false);
-    decision = obstacle_step(&supervisor, &event);
-    assert(decision.clear_count == 1);
-    event.seq = 6;
-    decision = obstacle_step(&supervisor, &event);
-    assert(decision.clear_count == 2);
-    event = ultrasonic(7, true, 100, 100, ULTRASONIC_QUALITY_VALID,
+    /* Open space cannot release WAIT_CLEAR or bridge valid-clear samples. */
+    event = ultrasonic(13, false, -1, 101, ULTRASONIC_QUALITY_OUTLIER,
                        false, false);
     decision = obstacle_step(&supervisor, &event);
     assert(decision.clear_count == 0);
-
-    for (uint32_t seq = 8; seq <= 10; ++seq) {
-        event = ultrasonic(seq, false, -1, -1, ULTRASONIC_QUALITY_LOST,
-                           false, false);
+    event = ultrasonic(14, true, 101, 101, ULTRASONIC_QUALITY_VALID,
+                       false, false);
+    decision = obstacle_step(&supervisor, &event);
+    assert(decision.clear_count == 1);
+    event = ultrasonic(15, true, 6500, 101,
+                       ULTRASONIC_QUALITY_NO_RETURN, false, false);
+    decision = obstacle_step(&supervisor, &event);
+    assert(decision.clear_count == 0);
+    for (uint32_t seq = 16; seq <= 18; ++seq) {
+        event = ultrasonic(seq, true, 101, 101,
+                           ULTRASONIC_QUALITY_VALID, false, false);
         decision = obstacle_step(&supervisor, &event);
     }
     assert(decision.policy == MOTION_POLICY_LINE_FOLLOW);
     assert(decision.reason == OBSTACLE_REASON_THREE_CLEAR);
     assert(decision.line_action == LINE_ACTION_RESUME);
 
-    event = ultrasonic(11, true, 350, 350, ULTRASONIC_QUALITY_INVALID,
+    /* Other ultrasonic faults must not interrupt active line following. */
+    event = ultrasonic(19, true, 350, 350, ULTRASONIC_QUALITY_INVALID,
                        false, true);
     decision = obstacle_step(&supervisor, &event);
-    assert(decision.policy == MOTION_POLICY_BLOCK);
-    assert(decision.reason == OBSTACLE_REASON_UNCERTAIN);
-    decision = obstacle_step(&supervisor, &event);
-    assert(decision.policy == MOTION_POLICY_BLOCK);
-    assert(decision.clear_count == 0);
+    assert(decision.policy == MOTION_POLICY_LINE_FOLLOW);
+    assert(supervisor.state == OBSTACLE_STATE_CLEAR);
 }
 
 static void test_automatic_bypass_sequence(void)
@@ -311,7 +449,13 @@ static void test_automatic_bypass_sequence(void)
     assert(supervisor.state == OBSTACLE_STATE_CLEAR);
     assert(decision.policy == MOTION_POLICY_LINE_FOLLOW);
 
-    event = ultrasonic(4, true, 150, 300,
+    /* 1111 is ordinary track before an avoidance has completed. */
+    line_sensor_sample_t all_black = line(true, true, true, true);
+    decision = obstacle_step_at(&supervisor, NULL, all_black, 190000);
+    assert(supervisor.state == OBSTACLE_STATE_CLEAR);
+    assert(decision.policy == MOTION_POLICY_LINE_FOLLOW);
+
+    event = ultrasonic(4, true, 100, 300,
                        ULTRASONIC_QUALITY_OUTLIER, false, false);
     decision = obstacle_step_at(&supervisor, &event, white, 200000);
     assert(supervisor.state == OBSTACLE_STATE_BRAKE);
@@ -320,47 +464,42 @@ static void test_automatic_bypass_sequence(void)
 
     decision = obstacle_step_at(&supervisor, NULL, white,
                                 200000 + config.brake_ms * 1000LL);
-    assert(supervisor.state == OBSTACLE_STATE_STRAFE_LEFT_EDGE);
+    assert(supervisor.state == OBSTACLE_STATE_STRAFE_LEFT_DISTANCE);
     assert(decision.policy == MOTION_POLICY_OVERRIDE);
     assert(decision.override_motion.left == config.lateral_start_speed);
 
     int64_t now_us = supervisor.phase_started_us +
-                     config.lateral_edge_min_ms * 1000LL;
-    for (uint32_t seq = 5; seq < 5U +
-         (uint32_t)config.edge_clear_confirm_count; ++seq) {
-        event = ultrasonic(seq, false, -1, -1,
-                           ULTRASONIC_QUALITY_LOST, false, false);
-        now_us += 60000;
-        decision = obstacle_step_at(&supervisor, &event, white, now_us);
-    }
-    assert(supervisor.state == OBSTACLE_STATE_STRAFE_LEFT_CLEARANCE);
+                     config.left_strafe_ms * 1000LL - 1;
+    decision = obstacle_step_at(&supervisor, NULL, black, now_us);
+    assert(supervisor.state == OBSTACLE_STATE_STRAFE_LEFT_DISTANCE);
     assert(decision.override_motion.left == config.lateral_speed);
 
-    now_us = supervisor.phase_started_us +
-             config.lateral_clearance_ms * 1000LL;
+    now_us++;
     decision = obstacle_step_at(&supervisor, NULL, white, now_us);
     assert(supervisor.state == OBSTACLE_STATE_SETTLE_FORWARD);
     assert(decision.policy == MOTION_POLICY_BLOCK);
 
     now_us += config.brake_ms * 1000LL;
     decision = obstacle_step_at(&supervisor, NULL, white, now_us);
-    assert(supervisor.state == OBSTACLE_STATE_FORWARD_BYPASS);
+    assert(supervisor.state == OBSTACLE_STATE_FORWARD_DISTANCE);
     assert(decision.override_motion.forward == config.forward_start_speed);
 
-    now_us += config.forward_bypass_ms * 1000LL;
+    now_us += config.forward_drive_ms * 1000LL;
     decision = obstacle_step_at(&supervisor, NULL, white, now_us);
     assert(supervisor.state == OBSTACLE_STATE_SETTLE_RIGHT);
     assert(decision.policy == MOTION_POLICY_BLOCK);
 
     now_us += config.brake_ms * 1000LL;
     decision = obstacle_step_at(&supervisor, NULL, white, now_us);
-    assert(supervisor.state == OBSTACLE_STATE_STRAFE_RIGHT_LINE);
+    assert(supervisor.state == OBSTACLE_STATE_STRAFE_RIGHT_DISTANCE);
     assert(decision.override_motion.left == -config.lateral_start_speed);
 
-    now_us += 20000;
+    /* The first black sample stops right strafe immediately. */
+    now_us += config.right_strafe_ms * 500LL;
     decision = obstacle_step_at(&supervisor, NULL, black, now_us);
     assert(supervisor.state == OBSTACLE_STATE_LINE_CONFIRM);
     assert(decision.policy == MOTION_POLICY_BLOCK);
+    assert(decision.reason == OBSTACLE_REASON_LINE_SEEN);
 
     for (int count = 1; count < config.line_confirm_count; ++count) {
         now_us += 20000;
@@ -369,6 +508,20 @@ static void test_automatic_bypass_sequence(void)
     assert(supervisor.state == OBSTACLE_STATE_CLEAR);
     assert(decision.policy == MOTION_POLICY_LINE_FOLLOW);
     assert(decision.line_action == LINE_ACTION_RESUME);
+    assert(supervisor.bypass_completed);
+
+    /* After avoidance, 1111 is a latched finish-line stop. */
+    now_us += 20000;
+    decision = obstacle_step_at(&supervisor, NULL, all_black, now_us);
+    assert(supervisor.state == OBSTACLE_STATE_FINISHED);
+    assert(decision.transition == OBSTACLE_TRANSITION_TO_FINISHED);
+    assert(decision.reason == OBSTACLE_REASON_FINISH_LINE);
+    assert(decision.policy == MOTION_POLICY_BLOCK);
+    assert(decision.line_action == LINE_ACTION_SUSPEND);
+    now_us += 20000;
+    decision = obstacle_step_at(&supervisor, NULL, white, now_us);
+    assert(supervisor.state == OBSTACLE_STATE_FINISHED);
+    assert(decision.policy == MOTION_POLICY_BLOCK);
 }
 
 static void test_start_button(void)
@@ -428,41 +581,52 @@ static void test_ultrasonic_transactions(void)
 
     ultrasonic_edge(echo_pin, 1, 1000);
     ultrasonic_edge(echo_pin, 0, 1584);
-    ultrasonic_step(&sensor, 31000);
+    ultrasonic_step(&sensor, 46000);
     ultrasonic_event_t event;
     assert(ultrasonic_take_event(&sensor, &event));
     assert(event.has_echo && event.raw_mm == 100);
     assert(event.quality == ULTRASONIC_QUALITY_VALID);
 
-    s_fake_time_us = 60000;
-    ultrasonic_step(&sensor, 60000);
-    ultrasonic_edge(echo_pin, 1, 61000);
-    ultrasonic_edge(echo_pin, 0, 62750);
-    ultrasonic_edge(echo_pin, 1, 62800);
-    ultrasonic_step(&sensor, 90000);
+    s_fake_time_us = 70000;
+    ultrasonic_step(&sensor, 70000);
+    ultrasonic_edge(echo_pin, 1, 71000);
+    ultrasonic_edge(echo_pin, 0, 72750);
+    ultrasonic_edge(echo_pin, 1, 72800);
+    ultrasonic_step(&sensor, 116000);
     assert(ultrasonic_take_event(&sensor, &event));
     assert(event.has_echo && event.pulse_us == 1750);
     assert(event.quality == ULTRASONIC_QUALITY_INVALID);
     assert(event.safety_uncertain);
 
     s_gpio_levels[echo_pin] = 0;
-    s_fake_time_us = 120000;
-    ultrasonic_step(&sensor, 120000);
-    ultrasonic_step(&sensor, 151000);
+    s_fake_time_us = 140000;
+    ultrasonic_step(&sensor, 140000);
+    ultrasonic_edge(echo_pin, 1, 141000);
+    ultrasonic_edge(echo_pin, 0, 179000);
+    ultrasonic_step(&sensor, 180000);
+    assert(ultrasonic_take_event(&sensor, &event));
+    assert(event.has_echo && event.pulse_us == 38000);
+    assert(event.raw_mm == 6517);
+    assert(event.quality == ULTRASONIC_QUALITY_NO_RETURN);
+    assert(!event.echo_high && !event.safety_uncertain);
+
+    s_fake_time_us = 210000;
+    ultrasonic_step(&sensor, 210000);
+    ultrasonic_step(&sensor, 256000);
     assert(ultrasonic_take_event(&sensor, &event));
     assert(!event.has_echo && !event.echo_high);
     assert(!event.safety_uncertain);
 
     s_gpio_levels[echo_pin] = 1;
-    ultrasonic_restart_session(&sensor, 200000);
+    ultrasonic_restart_session(&sensor, 300000);
     assert(ultrasonic_take_event(&sensor, &event));
     assert(!event.has_echo && event.echo_high && event.safety_uncertain);
-    ultrasonic_step(&sensor, 210000);
+    ultrasonic_step(&sensor, 310000);
     assert(!sensor.active);
     s_gpio_levels[echo_pin] = 0;
-    ultrasonic_step(&sensor, 220000);
+    ultrasonic_step(&sensor, 320000);
     assert(!sensor.blocked_echo_high);
-    ultrasonic_step(&sensor, 220001);
+    ultrasonic_step(&sensor, 320001);
     assert(sensor.active);
 }
 

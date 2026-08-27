@@ -4,7 +4,10 @@
 
 typedef struct {
     int lateral_side_permille;
+    /* Applied when motion.left is positive. */
     int lateral_yaw_compensation_permille;
+    /* Independently applied when motion.left is negative (right strafe). */
+    int right_lateral_yaw_compensation_permille;
     int lateral_side_wheel_minimum;
     int motor_b_positive_minimum;
 } kiwi_kinematics_config_t;
@@ -16,14 +19,14 @@ typedef struct {
     int edge_speed;
     int edge_max;
     int search_speed;
-    int minimum_active;
     int kp;
     int max_correction;
     int direction_confirm_count;
     int direction_hold_error;
-    int boost_command;
-    int boost_ms;
-    int boost_rearm_ms;
+    int single_sensor_inner_command;
+    int drive_assist_threshold;
+    int drive_assist_command;
+    int drive_assist_ms;
 } line_follow_config_t;
 
 typedef struct {
@@ -40,20 +43,18 @@ typedef struct {
     bool bypass_enabled;
     int stop_mm;
     int clear_confirm_count;
-    int edge_clear_confirm_count;
     int line_confirm_count;
+    int no_echo_limit;
     int uncertain_limit;
     int brake_ms;
     int lateral_speed;
     int lateral_start_speed;
     int motion_boost_ms;
-    int lateral_edge_min_ms;
-    int lateral_edge_timeout_ms;
-    int lateral_clearance_ms;
+    int left_strafe_ms;
     int forward_speed;
     int forward_start_speed;
-    int forward_bypass_ms;
-    int line_search_timeout_ms;
+    int forward_drive_ms;
+    int right_strafe_ms;
 } obstacle_config_t;
 
 typedef struct {

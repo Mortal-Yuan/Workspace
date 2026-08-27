@@ -21,9 +21,12 @@ motor_command_t kiwi_inverse_kinematics(
 {
     const int32_t lateral_side =
         (int32_t)motion.left * config->lateral_side_permille / 1000;
+    const int lateral_yaw_compensation = motion.left < 0 ?
+        config->right_lateral_yaw_compensation_permille :
+        config->lateral_yaw_compensation_permille;
     const int32_t compensated_clockwise = (int32_t)motion.clockwise +
         (int32_t)motion.left *
-            config->lateral_yaw_compensation_permille / 1000;
+            lateral_yaw_compensation / 1000;
     int32_t a = -(int32_t)motion.forward - lateral_side +
                 compensated_clockwise;
     int32_t b = -(int32_t)motion.left - compensated_clockwise;

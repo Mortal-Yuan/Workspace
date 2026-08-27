@@ -34,8 +34,6 @@ typedef struct {
     int16_t line_error;
     int16_t line_control_error;
     int16_t line_base_speed;
-    bool boost_a;
-    bool boost_c;
     ultrasonic_snapshot_t ultrasonic;
     motor_command_t motor;
     int64_t encoder_a;

@@ -56,13 +56,14 @@ typedef struct {
     uint32_t dropped_critical;
     uint32_t dropped_transport;
     bool uart_ready;
-    bool usb_ready;
+    volatile bool usb_ready;
     bool task_ready;
 } diagnostics_t;
 
 esp_err_t diagnostics_init(diagnostics_t *diagnostics, int uart_tx_pin,
                            int uart_rx_pin);
 command_batch_t diagnostics_poll_commands(diagnostics_t *diagnostics);
+void diagnostics_disable_usb(diagnostics_t *diagnostics);
 void diagnostics_publish_fault(diagnostics_t *diagnostics,
                                fault_record_t fault);
 void diagnostics_publish_critical(diagnostics_t *diagnostics,

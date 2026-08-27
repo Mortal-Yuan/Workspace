@@ -73,17 +73,28 @@ control policies are under `main/control`. See `固件模块化重构计划.md` 
 dependency and extension contracts.
 
 - Motors are stopped at startup.
-- Manual motion and the adjustable line-speed ceiling default to `450/1000`.
-  Line following uses `420/1000` on
-  `0110`/`1111`, `310/1000` on ordinary curves, and `280/1000` on one-sided
-  edge patterns. Curve commands are capped at `500/1000` or `450/1000`, and
-  nonzero curve-wheel commands have a `220/1000` minimum after scaling.
-- Line-follow motors A/C use an encoder-free starting boost: on initial motion
-  or a direction reversal, a requested magnitude below `500/1000` is raised to
-  `500/1000` for 150 ms, then returns to the controller request. A true zero for
-  120 ms rearms a same-direction boost. Avoidance/manual commands bypass this
-  helper. Do not add encoder speed control until motor-induced encoder glitches
-  are filtered or electrically corrected.
+- Manual motion and the adjustable line-speed ceiling default to `400/1000`.
+  The active line controller retains the final 2026-08-25 geometry from commit
+  `da7a8aa` (source introduced by `10c8414`). It uses normalized
+  `L/LC/RC/R` weights `-6/-2/+2/+6`, divides by the active-sensor count, and
+  applies `correction=clamp(error*100,-250,250)` to
+  `A=-base+correction, B=0, C=-base-correction`.
+- Line bases/limits are straight 360, ordinary curve 250/400, one-sided edge
+  190/320, and all-white search 320. Opposite directions require three
+  consecutive samples; while unconfirmed, the locked direction is held with
+  control-error magnitude at least 4. `0000` rotates in the locked direction,
+  defaulting left before a direction has been learned.
+- There is no blanket nonzero floor. A wheel with a calculated absolute target
+  of at least 200 gets a 500/1000, 150 ms assist only when it becomes a drive
+  wheel or reverses. All four single-sensor patterns keep the inside wheel at
+  least `+100`: `0001/0010: A=+100` and `0100/1000: C=+100`; this override
+  requires agreement with direction validation. The 100 command and other
+  43/44 inside targets are below the assist threshold.
+  Suspend/resume resets assist state so obstacle recovery can start cleanly.
+- The later equal-wheel, speed-only experiment is preserved as
+  `main/control/archive/line_follow_speed_only_2026-08-27.c.disabled` and is
+  excluded from CMake. The active obstacle supervisor uses the fixed-distance
+  calibration sequence described below and is independent of line control.
 - `1`, `2`, `3` run A/right, B/rear, C/left individually.
 - `w`, `s`, `x` are confirmed forward, backward, and stop.
 - A brief press of the board's `BOOT` button (GPIO0, active low) starts the
@@ -106,22 +117,45 @@ dependency and extension contracts.
 - `m` toggles the real-time line monitor, which defaults to 10 Hz while following.
 - `r` runs a short A/B/C sequence.
 - `+` and `-` adjust speed.
-- Line following normalizes the active-low inputs and computes a proportional error using scaled physical left-to-right weights `-6, -2, +2, +6`.
-- It steers with motors A/C around the confirmed forward combination and keeps
-  rear motor B stopped because B direction is not yet calibrated. Search
-  direction is independently latched; for `0000`, equal-and-opposite A/C search
-  runs at `360/1000`.
-- Latest physical-test result: after broader testing, the direction latch, three-cycle confirmation, and edge-speed limit handle the great majority of sharp corners sufficiently well. Rare direction-dependent entry cases remain an optional optimization point, not a required fix or blocker. Preserve both the earlier poor test and this newer conclusion in future handoffs.
+- Line following normalizes the active-low inputs in physical `L,LC,RC,R` order,
+  actively steers with A/C differential correction, and searches after line
+  loss. Place the car on the line before BOOT; if startup sees `0000`, the 8/25
+  contract immediately begins a left search rather than remaining stopped.
 - Telemetry prints normalized detections in physical `L,LC,RC,R` order, ultrasonic distance, and A/B/C encoder counts every 500 ms. In this display, `1` means black detected.
-- Follow-mode logs include timestamp, control state, infrared pattern and stability count, active sensor count, current/last error, selected base speed, ultrasonic distance, obstacle state, limited A/B/C commands, and encoder counts.
-- HC-SR04 samples have `VALID/OUTLIER/LOST` quality, actual Echo edge-level
-  validation, a three-sample median, and jump confirmation. Automatic bypass
+- Follow-mode logs publish the raw weighted error, direction-validated control
+  error, selected base speed, pattern state, and final A/B/C command.
+- HC-SR04 samples have `VALID/OUTLIER/LOST/INVALID/NO_RETURN` quality, actual
+  Echo edge-level validation, a three-sample median, and jump confirmation.
+  Ranging now uses a nominal 45 ms deadline and a 70 ms trigger period. A
+  completed pulse above 4000 mm is reported as `NO_RETURN` (`q=5`). Once
+  startup has been authorized, completed no-return pulses, low-Echo timeouts,
+  and clean far-distance `OUTLIER` jumps are treated as normal open space and
+  do not leave `CLEAR`. In active line following, the 20--100 mm raw-distance
+  test is the only ultrasonic condition allowed to interrupt `CLEAR`; even an
+  Echo-high or malformed-edge diagnostic does not alter the line policy.
+  Automatic bypass
   is enabled for bounded field calibration. The first raw Echo from 20 through
-  200 mm stops immediately, then the active rectangular sequence is
-  `BRAKE -> LEFT_EDGE -> LEFT_CLEARANCE -> FORWARD_BYPASS -> RIGHT_LINE ->
-  LINE_CONFIRM`, with settle states and fail-safe timeouts. Its 800 ms lateral
-  clearance and 2500 ms forward duration are provisional field parameters, not
-  yet measured 10 cm and 40 cm distances.
+  100 mm stops immediately, then the active sequence is `BRAKE -> LEFT_15CM ->
+  SETTLE_FORWARD -> FORWARD_19CM -> SETTLE_RIGHT -> RIGHT_12CM ->
+  LINE_CONFIRM`. Because encoder interference is not yet filtered, these are
+  scaled open-loop time segments: left 1231 ms, forward 1191 ms, and right
+  960 ms. Left is another 5% shorter than its preceding 1296 ms setting. Both
+  lateral steady/start body commands are restored to 380/500; forward remains
+  at 400/500 commands and 1191 ms. The forward segment was lengthened by the
+  nominal 40 mm made necessary when the stop threshold moved from 60 to 100 mm.
+  All segments still require ruler calibration.
+  The right segment is a 960 ms maximum: its first black sample writes zero in
+  the same 20 ms control cycle, then five stationary confirmation cycles precede
+  line-follow resume. No line by the deadline or loss during confirmation enters
+  `FAILSAFE`. Before a bypass completes, `1111` remains an ordinary line pattern;
+  afterward it enters a separate latched `FINISHED` stop state.
+- Ultrasonic authorization is fail-safe: startup requires three consecutive
+  valid far-Echo observations. After entering normal `CLEAR` line following,
+  every ultrasonic result other than a raw Echo from 20 through 100 mm is
+  diagnostic-only and cannot stop or modify line following. Fixed-distance
+  bypass segments do not interpret no-Echo as an obstacle-edge completion
+  signal; repeated uncertainty during an already active bypass may still enter
+  the maneuver fail-safe.
 - The first 2026-08-26 post-flash UART diagnostic showed GPIO13 Echo high, raw
   8113--8116 mm invalid pulses, and repeated timeouts while the ultrasonic heads
   were resting against the tabletop. After normal positioning, a 10-second
@@ -133,12 +167,50 @@ dependency and extension contracts.
   assumption and are not valid three-wheel strafe commands. A centralized kiwi
   inverse-kinematics module now derives candidate left strafe as
   `A=-0.866S, B=-S, C=+0.866S` before empirical dead-zone and yaw correction.
-  B positive has a 460 minimum; pure lateral A/C have a 300 minimum; lateral
-  yaw compensation is 20%. Automatic bypass is enabled for bounded field
+  B positive has a 460 minimum and pure lateral A/C have a 300 minimum. Yaw
+  compensation remains direction-specific but both sides are currently 50%.
+  At the 380 steady lateral command this produces
+  `A/B/C=-300/-570/+300` left and `+300/+570/-300` right; the 500 start
+  command produces `-300/-750/+300` and `+300/+750/-300`. Automatic bypass is enabled for bounded field
   calibration after `q/e` confirmed physical direction. `q/e` run for 1000 ms; `g` runs the verified
   forward basis at 400/1000 for 1000 ms for ruler calibration.
 
 ## Build and Flash
+
+## Status Display (LQ_TFT18SPIV33 / ILI9163B)
+
+- The identified 7-pin module is `LQ_TFT18SPIV33`. The active driver follows
+  Longqiu's ILI9163B TFT18 power, gamma, frame-rate, VCOM, address and MADCTL
+  initialization, with a 162x132 landscape drawing area in SPI mode 0:
+  `D/C=GPIO38`, `SDI/MOSI=GPIO20`, `SCK=GPIO45`, `CS=GPIO3`, `RST=GPIO47`,
+  `VCC=3V3`, and common `GND`. The old provisional ST7789 240x240 driver is
+  invalid for this module and has been removed.
+- GPIO20 is also ESP32-S3 native USB D+. The firmware therefore leaves the SPI
+  display pins untouched in `IDLE` while holding only `RST/GPIO47` low so a
+  reset cannot leave a stale RUNNING image. Command `v`, serial `f`, or a valid BOOT
+  start first disables USB diagnostics, then a low-priority display task claims
+  GPIO20 as SPI MOSI. Native USB disappearing at that point is expected. RESET
+  returns to the USB-capable IDLE boot path.
+- A display physically attached to GPIO20 may load D+ enough to prevent even
+  ROM flashing. Temporarily remove only the `SDI--GPIO20` jumper before USB
+  flashing, reset into the normal IDLE firmware, and reconnect it only after
+  flashing is complete. If automatic reset cannot enter download mode, hold
+  BOOT, tap RESET, release BOOT, flash, then tap RESET once normally.
+- GPIO47 now performs the module-required 50 ms low / 50 ms high hardware
+  reset before register initialization. GPIO45 is a strapping pin; keep SCK
+  low at reset with an external 10 kOhm
+  pull-down. GPIO3 is also a strapping/JTAG-selection pin; keep CS inactive
+  high with an external 10 kOhm pull-up to 3.3 V.
+- Once the display owns GPIO20, USB command `x` is unavailable. Use RESET as
+  the physical stop/recovery control. Do not hold BOOT while pressing RESET
+  except when intentionally entering the ROM downloader.
+
+User workflow requirement recorded on 2026-08-27: after every firmware program
+change, automatically run the host regression, build the ESP-IDF image,
+rediscover the connected board port, flash the new image, and perform a short
+no-command startup check. Do not wait for a separate flash request. If the board
+is disconnected or flashing is unsafe/blocked, report that condition explicitly.
+Documentation-only edits do not require reflashing an unchanged image.
 
 Normal ESP-IDF workflow:
 
@@ -165,14 +237,15 @@ The current installation uses ESP-IDF at `C:\esp\v5.4.4\esp-idf` and Espressif t
 
 ## Next Work
 
-1. Field-test the enabled rectangular bypass with space to stop it by RESET or
-   serial `x`; capture state transitions and physical displacement.
+1. Ground-test the enabled shortened left / 19 cm forward / shortened right sequence
+   with space to stop it by RESET or serial `x`; capture state transitions and
+   measure all three physical displacements.
 2. On the competition surface, measure at least five `q/e` displacements and
-   five `g` forward displacements. Use medians to calibrate the 10 cm lateral
-   clearance and 40 cm forward durations.
-3. Replace the provisional 800/2500 ms values with the measured 10/40 cm
-   medians. The first line detection already brakes before a five-cycle
-   stationary confirmation; edge and line searches have 5 s limits.
+   five `g` forward displacements. Use medians to calibrate lateral and forward
+   milliseconds per centimetre.
+3. Measure the scaled 1231/1191 ms fixed segments and the right segment's actual
+   early-stop time (960 ms maximum). Verify same-cycle braking, five-cycle line
+   confirmation, line-follow resume, and the post-bypass `1111 -> FINISHED` stop.
 4. Filter the motor-induced encoder glitches before replacing time-calibrated
    segments with encoder distance control. Add MPU6500 only if heading drift
    makes the open-loop rectangular path insufficiently repeatable.

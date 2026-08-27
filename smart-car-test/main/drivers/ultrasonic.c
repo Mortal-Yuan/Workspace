@@ -78,8 +78,21 @@ static void publish_event(ultrasonic_t *sensor, int64_t now_us,
         event.raw_mm = (int32_t)(pulse_us * 343 / 2000);
         if (anomaly) {
             event.quality = ULTRASONIC_QUALITY_INVALID;
-        } else if (event.raw_mm < 20 || event.raw_mm > 4000) {
+        } else if (event.raw_mm < 20) {
             event.quality = ULTRASONIC_QUALITY_INVALID;
+        } else if (event.raw_mm > 4000) {
+            /*
+             * HC-SR04-compatible modules commonly finish a no-return
+             * transaction with a long pulse.  This is different from Echo
+             * still being high at our deadline: the pulse ended cleanly, so
+             * count it as no Echo instead of an electrical/timing fault.
+             */
+            sensor->timeout_count++;
+            event.quality = ULTRASONIC_QUALITY_NO_RETURN;
+            if (sensor->timeout_count >=
+                (unsigned)sensor->config.timing.lost_confirm_count) {
+                event.filtered_mm = -1;
+            }
         } else {
             const bool jump = sensor->snapshot.filtered_mm >= 0 &&
                 abs(event.raw_mm - sensor->snapshot.filtered_mm) >

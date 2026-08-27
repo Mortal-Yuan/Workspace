@@ -12,6 +12,7 @@
 #include "motor_driver.h"
 #include "obstacle_supervisor.h"
 #include "start_button.h"
+#include "status_display.h"
 #include "ultrasonic.h"
 
 #define APP_CONTROL_TASK_STACK 6144
@@ -45,6 +46,7 @@ typedef struct {
     line_follow_t line_follow;
     obstacle_supervisor_t obstacle;
     diagnostics_t diagnostics;
+    status_display_t display;
     line_sensor_sample_t latest_line;
     fault_record_t faults[FAULT_SOURCE_COUNT];
     uint32_t fault_bitmap;
@@ -55,6 +57,7 @@ typedef struct {
     bool line_monitor;
     bool button_ready;
     bool diagnostics_ready;
+    bool display_ready;
     bool initialized;
     uint32_t control_overruns;
     uint32_t missed_periods;
