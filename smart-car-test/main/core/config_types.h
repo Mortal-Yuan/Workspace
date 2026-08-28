@@ -30,6 +30,20 @@ typedef struct {
 } line_follow_config_t;
 
 typedef struct {
+    int roi_left_permille;
+    int roi_right_permille;
+    int roi_top_permille;
+    int roi_bottom_permille;
+    int center_offset_permille;
+    int minimum_contrast;
+    int minimum_column_fill_permille;
+    int minimum_component_pixels;
+    int finish_width_permille;
+    int finish_black_permille;
+    int fresh_ms;
+} camera_line_config_t;
+
+typedef struct {
     int timeout_us;
     int period_ms;
     int fresh_ms;

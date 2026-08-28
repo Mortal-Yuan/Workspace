@@ -23,12 +23,13 @@ const app_config_t APP_CONFIG = {
     },
     .line = {
         /* Keep the 8/25 geometry while adding selective drive-wheel authority. */
-        .straight_speed = 360,
-        .curve_speed = 250,
-        .curve_max = 400,
-        .edge_speed = 190,
-        .edge_max = 320,
-        .search_speed = 320,
+        /* Conservative camera bring-up speeds; raise only after track tests. */
+        .straight_speed = 240,
+        .curve_speed = 190,
+        .curve_max = 320,
+        .edge_speed = 160,
+        .edge_max = 280,
+        .search_speed = 240,
         .kp = 100,
         .max_correction = 250,
         .direction_confirm_count = 3,
@@ -38,6 +39,22 @@ const app_config_t APP_CONFIG = {
         .drive_assist_threshold = 200,
         .drive_assist_command = 500,
         .drive_assist_ms = 150,
+    },
+    .camera_line = {
+        /* Analyze the nearest central track window in the native view. */
+        .roi_left_permille = 250,
+        .roi_right_permille = 750,
+        .roi_top_permille = 600,
+        .roi_bottom_permille = 930,
+        /* Median of 35 centered, sub-pixel samples was -37. */
+        .center_offset_permille = 37,
+        .minimum_contrast = 30,
+        .minimum_column_fill_permille = 150,
+        .minimum_component_pixels = 24,
+        .finish_width_permille = 700,
+        .finish_black_permille = 350,
+        /* Three to four missing 15 fps frames stop autonomous motion. */
+        .fresh_ms = 350,
     },
     .ultrasonic = {
         /* Allow the module's completed long no-return pulse to be observed. */
@@ -149,6 +166,26 @@ bool app_config_validate(const app_config_t *config)
             config->line.drive_assist_threshold &&
         valid_command(config->line.drive_assist_command) &&
         config->line.drive_assist_ms > 0 &&
+        config->camera_line.roi_left_permille >= 0 &&
+        config->camera_line.roi_left_permille <
+            config->camera_line.roi_right_permille &&
+        config->camera_line.roi_right_permille <= 1000 &&
+        config->camera_line.roi_top_permille >= 0 &&
+        config->camera_line.roi_top_permille <
+            config->camera_line.roi_bottom_permille &&
+        config->camera_line.roi_bottom_permille <= 1000 &&
+        config->camera_line.center_offset_permille >= -500 &&
+        config->camera_line.center_offset_permille <= 500 &&
+        config->camera_line.minimum_contrast >= 10 &&
+        config->camera_line.minimum_contrast <= 255 &&
+        config->camera_line.minimum_column_fill_permille > 0 &&
+        config->camera_line.minimum_column_fill_permille <= 1000 &&
+        config->camera_line.minimum_component_pixels > 0 &&
+        config->camera_line.finish_width_permille > 0 &&
+        config->camera_line.finish_width_permille <= 1000 &&
+        config->camera_line.finish_black_permille > 0 &&
+        config->camera_line.finish_black_permille <= 1000 &&
+        config->camera_line.fresh_ms >= 100 &&
         config->button.press_debounce_ms > 0 &&
         config->button.release_rearm_ms > 0 &&
         config->button.startup_guard_ms >= 0 &&

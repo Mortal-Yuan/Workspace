@@ -22,6 +22,10 @@ typedef struct {
     app_mode_t mode;
     uint8_t obstacle_state;
     uint8_t line_pattern;
+    bool camera_streaming;
+    bool camera_frame_valid;
+    bool camera_fresh;
+    int16_t camera_center_permille;
     int32_t ultrasonic_mm;
     motor_command_t motor;
     bool finished;

@@ -29,6 +29,7 @@ typedef struct {
     uint8_t obstacle_state;
     uint8_t obstacle_clear_count;
     line_sensor_sample_t line;
+    camera_line_snapshot_t camera;
     uint8_t line_pattern;
     int8_t line_state;
     int16_t line_error;

@@ -23,6 +23,7 @@ typedef struct {
 
 static const glyph_t GLYPHS[] = {
     {' ', {0x00, 0x00, 0x00, 0x00, 0x00}},
+    {'+', {0x08, 0x08, 0x3e, 0x08, 0x08}},
     {'-', {0x08, 0x08, 0x08, 0x08, 0x08}},
     {'.', {0x00, 0x60, 0x60, 0x00, 0x00}},
     {':', {0x00, 0x36, 0x36, 0x00, 0x00}},
@@ -308,6 +309,22 @@ static uint16_t status_color(const status_display_snapshot_t *snapshot)
            RGB565(20, 180, 75) : RGB565(80, 85, 95);
 }
 
+static const char *camera_status_text(
+    const status_display_snapshot_t *snapshot)
+{
+    if (snapshot->camera_fresh) return "OK";
+    if (snapshot->camera_streaming) return "WAIT";
+    return "LOST";
+}
+
+static uint16_t camera_status_color(
+    const status_display_snapshot_t *snapshot)
+{
+    if (snapshot->camera_fresh) return RGB565(60, 225, 110);
+    if (snapshot->camera_streaming) return RGB565(245, 190, 70);
+    return RGB565(255, 70, 70);
+}
+
 static esp_err_t render_screen(status_display_t *display,
                                spi_device_handle_t spi,
                                const status_display_snapshot_t *snapshot)
@@ -332,8 +349,12 @@ static esp_err_t render_screen(status_display_t *display,
         snprintf(line, sizeof(line), "MODE %s", mode_text(snapshot->mode));
         draw_text(display, chunk_y, 5, 25, line, 1,
                   RGB565(210, 225, 240));
+        snprintf(line, sizeof(line), "CAM %s",
+                 camera_status_text(snapshot));
+        draw_text(display, chunk_y, 88, 25, line, 1,
+                  camera_status_color(snapshot));
 
-        draw_text(display, chunk_y, 5, 42, "IR", 1,
+        draw_text(display, chunk_y, 5, 42, "CAM", 1,
                   RGB565(210, 225, 240));
         for (int bit = 0; bit < 4; ++bit) {
             const bool active = (snapshot->line_pattern & (1U << (3 - bit))) != 0;
@@ -353,7 +374,14 @@ static esp_err_t render_screen(status_display_t *display,
                   snapshot->ultrasonic_mm <= 100 ? RGB565(255, 70, 70) :
                                                    RGB565(90, 220, 235));
 
-        snprintf(line, sizeof(line), "OBS %u", snapshot->obstacle_state);
+        if (snapshot->camera_frame_valid) {
+            snprintf(line, sizeof(line), "OBS %u C%+d",
+                     snapshot->obstacle_state,
+                     snapshot->camera_center_permille);
+        } else {
+            snprintf(line, sizeof(line), "OBS %u C----",
+                     snapshot->obstacle_state);
+        }
         draw_text(display, chunk_y, 5, 84, line, 1,
                   RGB565(245, 190, 70));
         snprintf(line, sizeof(line), "M %d %d %d",
@@ -363,6 +391,7 @@ static esp_err_t render_screen(status_display_t *display,
 
         const char *footer = snapshot->finished ? "FINISHED" :
                              snapshot->failsafe ? "FAILSAFE" :
+                             snapshot->mode == APP_MODE_FAULT ? "FAULT" :
                              snapshot->mode == APP_MODE_AUTONOMOUS ?
                              "RUNNING" : "READY";
         const int footer_width = (int)strlen(footer) * 12;
@@ -426,7 +455,7 @@ esp_err_t status_display_init(status_display_t *display)
 {
     if (display == NULL) return ESP_ERR_INVALID_ARG;
     memset(display, 0, sizeof(*display));
-    /* Keep the panel blank in IDLE and after a controller reset. */
+    /* Hold reset until the controller requests the display task. */
     const gpio_config_t reset_config = {
         .pin_bit_mask = 1ULL << BOARD_PIN_DISPLAY_RESET,
         .mode = GPIO_MODE_OUTPUT,

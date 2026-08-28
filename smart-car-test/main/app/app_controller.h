@@ -5,10 +5,10 @@
 
 #include "app_config.h"
 #include "app_events.h"
+#include "camera_line_sensor.h"
 #include "diagnostics.h"
 #include "encoder.h"
 #include "line_follow.h"
-#include "line_sensor.h"
 #include "motor_driver.h"
 #include "obstacle_supervisor.h"
 #include "start_button.h"
@@ -39,7 +39,7 @@ typedef struct {
     const app_config_t *config;
     app_mode_t mode;
     motor_driver_t motor;
-    line_sensor_t line_sensor;
+    camera_line_sensor_t camera_line;
     encoder_context_t encoder;
     ultrasonic_t ultrasonic;
     start_button_t button;
@@ -47,6 +47,7 @@ typedef struct {
     obstacle_supervisor_t obstacle;
     diagnostics_t diagnostics;
     status_display_t display;
+    camera_line_snapshot_t latest_camera;
     line_sensor_sample_t latest_line;
     fault_record_t faults[FAULT_SOURCE_COUNT];
     uint32_t fault_bitmap;

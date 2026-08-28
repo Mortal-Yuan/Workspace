@@ -48,7 +48,6 @@ typedef struct {
                              sizeof(diagnostic_event_t)];
     uint8_t telemetry_storage[sizeof(diagnostic_snapshot_t)];
     diagnostic_transport_t uart;
-    diagnostic_transport_t usb;
     StaticTask_t task_buffer;
     StackType_t task_stack[DIAGNOSTICS_TASK_STACK];
     TaskHandle_t task;
@@ -56,14 +55,12 @@ typedef struct {
     uint32_t dropped_critical;
     uint32_t dropped_transport;
     bool uart_ready;
-    volatile bool usb_ready;
     bool task_ready;
 } diagnostics_t;
 
 esp_err_t diagnostics_init(diagnostics_t *diagnostics, int uart_tx_pin,
                            int uart_rx_pin);
 command_batch_t diagnostics_poll_commands(diagnostics_t *diagnostics);
-void diagnostics_disable_usb(diagnostics_t *diagnostics);
 void diagnostics_publish_fault(diagnostics_t *diagnostics,
                                fault_record_t fault);
 void diagnostics_publish_critical(diagnostics_t *diagnostics,

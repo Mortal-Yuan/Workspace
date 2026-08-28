@@ -5,7 +5,6 @@
 #include <string.h>
 
 #include "driver/uart.h"
-#include "driver/usb_serial_jtag.h"
 #include "esp_timer.h"
 
 static const char *mode_name(app_mode_t mode)
@@ -20,13 +19,10 @@ static const char *mode_name(app_mode_t mode)
     }
 }
 
-static int transport_write(bool uart, const char *data, size_t length)
+static int transport_write(const char *data, size_t length)
 {
     const size_t budget = length > 64 ? 64 : length;
-    if (uart) {
-        return uart_tx_chars(UART_NUM_0, data, budget);
-    }
-    return usb_serial_jtag_write_bytes(data, budget, 0);
+    return uart_tx_chars(UART_NUM_0, data, budget);
 }
 
 static void promote_fault(diagnostic_transport_t *transport)
@@ -106,8 +102,7 @@ static void enqueue_normal(diagnostics_t *diagnostics,
     transport->normal_progress_us = transport->normal_started_us;
 }
 
-static void pump_transport(diagnostic_transport_t *transport, bool uart,
-                           int64_t now_us)
+static void pump_transport(diagnostic_transport_t *transport, int64_t now_us)
 {
     promote_fault(transport);
     char *data = NULL;
@@ -137,8 +132,7 @@ static void pump_transport(diagnostic_transport_t *transport, bool uart,
     } else {
         return;
     }
-    const int written = transport_write(uart, data + *offset,
-                                        length - *offset);
+    const int written = transport_write(data + *offset, length - *offset);
     if (written > 0) {
         *offset += (size_t)written;
         if (fault) {
@@ -197,7 +191,10 @@ static void diagnostics_task(void *arg)
             length = bounded_length(snprintf(
                 scratch, sizeof(scratch),
                 "STATUS t=%" PRId64 "ms mode=%s obstacle=%u progress=%u "
-                "IR=%d%d%d%d pattern=%x line=%d err=%d/%d base=%d "
+                "CAM=%d%d%d%d pattern=%x fresh=%d seq=%" PRIu32
+                " pos=%d width=%u black=%u thr=%u contrast=%u "
+                "cam_drop=%" PRIu32 " cam_err=%" PRIu32
+                " line=%d err=%d/%d base=%d "
                 "us=%" PRId32 "/%" PRId32
                 " q=%d echo=%d wait=%d timeout=%" PRIu32
                 " anomaly=%" PRIu32 " cmd=%d,%d,%d "
@@ -207,7 +204,16 @@ static void diagnostics_task(void *arg)
                 snapshot.obstacle_state, snapshot.obstacle_clear_count,
                 snapshot.line.left, snapshot.line.left_center,
                 snapshot.line.right_center, snapshot.line.right,
-                (unsigned)snapshot.line_pattern, snapshot.line_state,
+                (unsigned)snapshot.line_pattern, snapshot.camera.fresh,
+                snapshot.camera.decoded_frames,
+                snapshot.camera.center_permille,
+                (unsigned)snapshot.camera.width_permille,
+                (unsigned)snapshot.camera.black_permille,
+                (unsigned)snapshot.camera.threshold,
+                (unsigned)snapshot.camera.contrast,
+                snapshot.camera.dropped_frames,
+                snapshot.camera.decode_errors,
+                snapshot.line_state,
                 snapshot.line_error, snapshot.line_control_error,
                 snapshot.line_base_speed,
                 snapshot.ultrasonic.raw_mm,
@@ -228,17 +234,9 @@ static void diagnostics_task(void *arg)
                 if (diagnostics->uart_ready) {
                     enqueue_fault(&diagnostics->uart, scratch, length);
                 }
-                if (diagnostics->usb_ready) {
-                    enqueue_fault(&diagnostics->usb, scratch, length);
-                }
             } else {
                 if (diagnostics->uart_ready) {
                     enqueue_normal(diagnostics, &diagnostics->uart,
-                                   scratch, length,
-                                   transition);
-                }
-                if (diagnostics->usb_ready) {
-                    enqueue_normal(diagnostics, &diagnostics->usb,
                                    scratch, length,
                                    transition);
                 }
@@ -246,10 +244,7 @@ static void diagnostics_task(void *arg)
         }
         const int64_t now_us = esp_timer_get_time();
         if (diagnostics->uart_ready) {
-            pump_transport(&diagnostics->uart, true, now_us);
-        }
-        if (diagnostics->usb_ready) {
-            pump_transport(&diagnostics->usb, false, now_us);
+            pump_transport(&diagnostics->uart, now_us);
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -289,13 +284,6 @@ esp_err_t diagnostics_init(diagnostics_t *diagnostics, int uart_tx_pin,
         uart_driver_install(UART_NUM_0, 256, 0, 0, NULL, 0) == ESP_OK) {
         diagnostics->uart_ready = true;
     }
-    usb_serial_jtag_driver_config_t usb_config = {
-        .tx_buffer_size = 1024,
-        .rx_buffer_size = 1024,
-    };
-    if (usb_serial_jtag_driver_install(&usb_config) == ESP_OK) {
-        diagnostics->usb_ready = true;
-    }
     diagnostics->task = xTaskCreateStatic(
         diagnostics_task, "diagnostics", DIAGNOSTICS_TASK_STACK,
         diagnostics, 2, diagnostics->task_stack, &diagnostics->task_buffer);
@@ -307,32 +295,13 @@ command_batch_t diagnostics_poll_commands(diagnostics_t *diagnostics)
 {
     command_batch_t batch = {0};
     if (diagnostics == NULL) return batch;
-    if (diagnostics->usb_ready) {
-        const int count = usb_serial_jtag_read_bytes(
-            batch.bytes, 8, 0);
-        if (count > 0) batch.count = (uint8_t)count;
-    }
-    if (diagnostics->uart_ready && batch.count < APP_COMMAND_BATCH_MAX) {
+    if (diagnostics->uart_ready) {
         const int count = uart_read_bytes(
             UART_NUM_0, batch.bytes + batch.count,
             APP_COMMAND_BATCH_MAX - batch.count, 0);
         if (count > 0) batch.count += (uint8_t)count;
     }
     return batch;
-}
-
-void diagnostics_disable_usb(diagnostics_t *diagnostics)
-{
-    if (diagnostics == NULL) return;
-    /*
-     * GPIO20 is about to leave the fixed USB Serial/JTAG function.  Keep the
-     * driver installed so RESET can recover cleanly, but stop all task access
-     * before the SPI display claims the pin.
-     */
-    diagnostics->usb_ready = false;
-    diagnostics->usb.fault_current_valid = false;
-    diagnostics->usb.fault_next_valid = false;
-    diagnostics->usb.normal_valid = false;
 }
 
 void diagnostics_publish_fault(diagnostics_t *diagnostics,

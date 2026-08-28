@@ -7,7 +7,8 @@ This file is the handoff summary for agents working in `smart-car-test`.
 - Target board: ESP32-S3-DevKitC-1 / ESP32-S3-WROOM-2.
 - Framework: ESP-IDF 5.4.4.
 - Course platform: three-wheel omnidirectional smart car.
-- Current phase: bring-up and calibration of motors, encoders, infrared line sensors, and ultrasonic ranging.
+- Current phase: replacing the four-channel infrared sensor with a USB UVC
+  camera, then calibrating camera line following and ultrasonic obstacle bypass.
 - Course direction from the lecture: line following and obstacle avoidance first, with camera/ball interaction and optional extensions in later phases.
 
 The detailed, experimentally confirmed motor and infrared mapping is in [电机与红外测试记录.md](电机与红外测试记录.md). The complete development history, wiring summary, algorithm experiments, failures, and latest physical-test conclusions are in [项目开发与实验日志.md](项目开发与实验日志.md). Treat those documents and the current source as authoritative when older notes disagree.
@@ -52,8 +53,12 @@ The supplied VS Code archive contains an ESP-IDF LED blink project, and the Ardu
 - All three motors and all three encoder pairs have produced valid activity.
 - Confirmed forward command: `A=-speed, B=0, C=-speed`.
 - Confirmed backward command is the exact inverse.
-- Infrared physical order, left to right: `OUT4/GPIO5`, `OUT3/GPIO4`, `OUT2/GPIO2`, `OUT1/GPIO1`.
-- Infrared outputs are active low: black/indicator on is `0`; white/indicator off is `1`.
+- The four-channel infrared module has been retired. Its VCC/GND/OUT wires may
+  be removed; GPIO1/2/4 are free and GPIO5 is reassigned to display MOSI.
+- The verified UVC camera is VID `0x349c`, PID `0x3307`, wired as
+  `D-=GPIO19`, `D+=GPIO20`, `5V`, and common `GND`. It supports the selected
+  MJPEG 640x480 @ 15 fps profile. The camera was physically remounted upright
+  on 2026-08-28, so preview and vision now use the native image orientation.
 - HC-SR04 is assigned `Trig=GPIO6`, `Echo=GPIO13`. Non-blocking GPIO-edge timing feeds obstacle avoidance while line following. Ranging accuracy and the physical Echo level interface have not yet been formally validated.
 - The current uncommitted UART0 diagnostic uses `TX=GPIO43` and `RX=GPIO44`
   at 115200 bit/s, so those pins are not available for MPU6500 I2C.
@@ -79,8 +84,8 @@ dependency and extension contracts.
   `L/LC/RC/R` weights `-6/-2/+2/+6`, divides by the active-sensor count, and
   applies `correction=clamp(error*100,-250,250)` to
   `A=-base+correction, B=0, C=-base-correction`.
-- Line bases/limits are straight 360, ordinary curve 250/400, one-sided edge
-  190/320, and all-white search 320. Opposite directions require three
+- Camera bring-up line bases/limits are straight 240, ordinary curve 190/320,
+  one-sided edge 160/280, and no-line search 240. Opposite directions require three
   consecutive samples; while unconfirmed, the locked direction is held with
   control-error magnitude at least 4. `0000` rotates in the locked direction,
   defaulting left before a direction has been learned.
@@ -117,11 +122,30 @@ dependency and extension contracts.
 - `m` toggles the real-time line monitor, which defaults to 10 Hz while following.
 - `r` runs a short A/B/C sequence.
 - `+` and `-` adjust speed.
-- Line following normalizes the active-low inputs in physical `L,LC,RC,R` order,
-  actively steers with A/C differential correction, and searches after line
-  loss. Place the car on the line before BOOT; if startup sees `0000`, the 8/25
-  contract immediately begins a left search rather than remaining stopped.
-- Telemetry prints normalized detections in physical `L,LC,RC,R` order, ultrasonic distance, and A/B/C encoder counts every 500 ms. In this display, `1` means black detected.
+- USB Host receives 640x480 MJPEG at 15 fps. `esp_jpeg` decodes directly at
+  1/8 scale to 80x60; the lower 60%--93% of the native view is thresholded
+  adaptively and its largest black column component is mapped to virtual
+  `L/LC/RC/R`. Board testing sustained about 13.6 decoded frames/s with no
+  decode error or watchdog warning after adding a one-tick yield per frame.
+- Line following consumes the virtual `L,LC,RC,R`, actively steers with A/C
+  differential correction, and searches after line loss. Place the car on the
+  line before BOOT. BOOT/`f` is ignored until a fresh camera result exists; a
+  camera result older than 350 ms during autonomy enters `FAULT` and disables
+  the motors in that control cycle.
+- Telemetry prints the virtual pattern plus camera freshness, decoded sequence,
+  center, width, black fraction, threshold, contrast, drops, errors, ultrasonic
+  distance, and A/B/C encoder counts. In the virtual pattern, `1` means the
+  corresponding camera-derived lane region sees black.
+- Camera vision analyzes the native view's central near-track window
+  (`x=25%..75%`, `y=60%..93%`). Horizontal center and component width are
+  normalized to that window, so dark laboratory background outside it cannot
+  dominate the actual line. The remounted camera uses a +37 permille center
+  offset from the median of 35 centered, sub-pixel telemetry samples. The
+  weighted centroid retains fractional-column precision before normalization.
+  A final 35-sample run reported median center 0 and range 0..5, always `0110`.
+- The cropped window is divided into five equal steering bands at -600, -200,
+  +200, and +600 permille. The wider center band avoids one-pixel quantization
+  jitter toggling a physically centered car between straight and curve.
 - Follow-mode logs publish the raw weighted error, direction-validated control
   error, selected base speed, pattern state, and final A/B/C command.
 - HC-SR04 samples have `VALID/OUTLIER/LOST/INVALID/NO_RETURN` quality, actual
@@ -182,28 +206,20 @@ dependency and extension contracts.
 - The identified 7-pin module is `LQ_TFT18SPIV33`. The active driver follows
   Longqiu's ILI9163B TFT18 power, gamma, frame-rate, VCOM, address and MADCTL
   initialization, with a 162x132 landscape drawing area in SPI mode 0:
-  `D/C=GPIO38`, `SDI/MOSI=GPIO20`, `SCK=GPIO45`, `CS=GPIO3`, `RST=GPIO47`,
+  `D/C=GPIO38`, `SDI/MOSI=GPIO5`, `SCK=GPIO45`, `CS=GPIO3`, `RST=GPIO47`,
   `VCC=3V3`, and common `GND`. The old provisional ST7789 240x240 driver is
   invalid for this module and has been removed.
-- GPIO20 is also ESP32-S3 native USB D+. The firmware therefore leaves the SPI
-  display pins untouched in `IDLE` while holding only `RST/GPIO47` low so a
-  reset cannot leave a stale RUNNING image. Command `v`, serial `f`, or a valid BOOT
-  start first disables USB diagnostics, then a low-priority display task claims
-  GPIO20 as SPI MOSI. Native USB disappearing at that point is expected. RESET
-  returns to the USB-capable IDLE boot path.
-- A display physically attached to GPIO20 may load D+ enough to prevent even
-  ROM flashing. Temporarily remove only the `SDI--GPIO20` jumper before USB
-  flashing, reset into the normal IDLE firmware, and reconnect it only after
-  flashing is complete. If automatic reset cannot enter download mode, hold
-  BOOT, tap RESET, release BOOT, flash, then tap RESET once normally.
+- GPIO19/20 are permanently reserved for camera USB D-/D+. The former display
+  `SDI--GPIO20` jumper must be moved to GPIO5; leaving both attached is an
+  electrical conflict. Native USB Serial/JTAG diagnostics are disabled and all
+  flashing/commands use the CP210x UART on GPIO43/44.
 - GPIO47 now performs the module-required 50 ms low / 50 ms high hardware
   reset before register initialization. GPIO45 is a strapping pin; keep SCK
   low at reset with an external 10 kOhm
   pull-down. GPIO3 is also a strapping/JTAG-selection pin; keep CS inactive
   high with an external 10 kOhm pull-up to 3.3 V.
-- Once the display owns GPIO20, USB command `x` is unavailable. Use RESET as
-  the physical stop/recovery control. Do not hold BOOT while pressing RESET
-  except when intentionally entering the ROM downloader.
+- RESET remains the physical stop/recovery control. Do not hold BOOT while
+  pressing RESET except when intentionally entering the ROM downloader.
 
 User workflow requirement recorded on 2026-08-27: after every firmware program
 change, automatically run the host regression, build the ESP-IDF image,
@@ -227,25 +243,37 @@ uploading the stub. The reliable fallback is:
 ```powershell
 python -m esptool --chip esp32s3 -p COM3 -b 115200 `
   --before default_reset --after hard_reset --no-stub write_flash `
-  --flash_mode dio --flash_freq 80m --flash_size 2MB `
+  --flash_mode dout --flash_freq 80m --flash_size 32MB `
   0x0 build/bootloader/bootloader.bin `
   0x8000 build/partition_table/partition-table.bin `
   0x10000 build/smart-car-test.bin
 ```
 
+These fallback flash parameters match the connected WROOM-2 board verified by
+`esptool flash_id` (32 MB OPI flash). Recheck `build/flash_args` after changing
+the target or sdkconfig; forcing the former 2 MB value makes the 4 MB factory
+partition invalid and causes a boot loop.
+
 The current installation uses ESP-IDF at `C:\esp\v5.4.4\esp-idf` and Espressif tools under `C:\Espressif\tools`. These are machine-local paths and are not committed as VS Code settings.
 
 ## Next Work
 
-1. Ground-test the enabled shortened left / 19 cm forward / shortened right sequence
+1. Mount the camera rigidly, place the car over the competition black line, and
+   inspect UART `CAM` center/width/black/threshold telemetry while manually
+   moving the unpowered chassis left and right. Tune ROI and thresholds before
+   allowing autonomous motion.
+2. With the wheels initially raised, verify that camera-derived left/right
+   patterns command the expected steering direction; then do a low-speed floor
+   test with RESET immediately accessible.
+3. Ground-test the enabled shortened left / 19 cm forward / shortened right sequence
    with space to stop it by RESET or serial `x`; capture state transitions and
    measure all three physical displacements.
-2. On the competition surface, measure at least five `q/e` displacements and
+4. On the competition surface, measure at least five `q/e` displacements and
    five `g` forward displacements. Use medians to calibrate lateral and forward
    milliseconds per centimetre.
-3. Measure the scaled 1231/1191 ms fixed segments and the right segment's actual
+5. Measure the scaled 1231/1191 ms fixed segments and the right segment's actual
    early-stop time (960 ms maximum). Verify same-cycle braking, five-cycle line
    confirmation, line-follow resume, and the post-bypass `1111 -> FINISHED` stop.
-4. Filter the motor-induced encoder glitches before replacing time-calibrated
+6. Filter the motor-induced encoder glitches before replacing time-calibrated
    segments with encoder distance control. Add MPU6500 only if heading drift
    makes the open-loop rectangular path insufficiently repeatable.

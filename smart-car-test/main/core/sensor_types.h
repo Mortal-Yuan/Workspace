@@ -18,6 +18,25 @@ static inline uint8_t line_sensor_pattern(line_sensor_sample_t sample)
                      sample.right);
 }
 
+typedef struct {
+    line_sensor_sample_t virtual_sensors;
+    bool streaming;
+    bool frame_valid;
+    bool fresh;
+    bool line_detected;
+    bool finish_detected;
+    int16_t center_permille;
+    uint16_t width_permille;
+    uint16_t black_permille;
+    uint8_t threshold;
+    uint8_t contrast;
+    uint32_t received_frames;
+    uint32_t decoded_frames;
+    uint32_t dropped_frames;
+    uint32_t decode_errors;
+    int64_t updated_us;
+} camera_line_snapshot_t;
+
 typedef enum {
     ULTRASONIC_QUALITY_NEVER,
     ULTRASONIC_QUALITY_VALID,

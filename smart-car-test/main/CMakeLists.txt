@@ -3,12 +3,13 @@ idf_component_register(
         "app_main.c"
         "app/app_config.c"
         "app/app_controller.c"
+        "control/camera_line_vision.c"
         "control/kiwi_kinematics.c"
         "control/line_follow.c"
         "control/obstacle_supervisor.c"
         "diagnostics/diagnostics.c"
+        "drivers/camera_line_sensor.c"
         "drivers/encoder.c"
-        "drivers/line_sensor.c"
         "drivers/motor_driver.c"
         "drivers/start_button.c"
         "drivers/status_display.c"
@@ -24,5 +25,5 @@ idf_component_register(
         "drivers"
         "platform"
     REQUIRES esp_driver_gpio esp_driver_ledc esp_driver_spi esp_driver_uart
-             esp_driver_usb_serial_jtag esp_timer
+             esp_jpeg esp_timer usb usb_host_uvc
 )

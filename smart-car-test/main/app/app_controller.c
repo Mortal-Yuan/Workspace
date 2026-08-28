@@ -36,10 +36,6 @@ static void enable_status_display(app_controller_t *controller)
         status_display_is_requested(&controller->display)) {
         return;
     }
-    /* GPIO20 changes from USB D+ to SPI MOSI after this point. */
-    if (controller->diagnostics_ready) {
-        diagnostics_disable_usb(&controller->diagnostics);
-    }
     status_display_enable(&controller->display);
 }
 
@@ -75,6 +71,20 @@ static void set_fault(app_controller_t *controller, fault_source_t source,
     if (controller->diagnostics_ready) {
         diagnostics_publish_fault(&controller->diagnostics,
                                   controller->faults[source]);
+    }
+    if (controller->display_ready) {
+        enable_status_display(controller);
+        const status_display_snapshot_t display_snapshot = {
+            .mode = APP_MODE_FAULT,
+            .line_pattern = line_sensor_pattern(controller->latest_line),
+            .camera_streaming = controller->latest_camera.streaming,
+            .camera_frame_valid = controller->latest_camera.frame_valid,
+            .camera_fresh = controller->latest_camera.fresh,
+            .camera_center_permille =
+                controller->latest_camera.center_permille,
+            .ultrasonic_mm = -1,
+        };
+        status_display_publish(&controller->display, &display_snapshot);
     }
 }
 
@@ -122,8 +132,13 @@ static void start_autonomy(app_controller_t *controller, int64_t now_us,
     }
     controller->manual_command = motor_command_zero();
     controller->self_test = (self_test_t) {0};
-    line_sensor_sample_t initial = line_sensor_read(&controller->line_sensor);
-    line_follow_reset_for_start(&controller->line_follow, initial);
+    if (!controller->latest_camera.fresh) {
+        publish_event(controller, DIAGNOSTIC_EVENT_INFO,
+                      ESP_ERR_TIMEOUT, 0, "camera_not_ready", now_us);
+        return;
+    }
+    line_follow_reset_for_start(&controller->line_follow,
+                                controller->latest_line);
     obstacle_supervisor_reset(&controller->obstacle);
     ultrasonic_restart_session(&controller->ultrasonic, now_us);
     controller->mode = APP_MODE_AUTONOMOUS;
@@ -344,6 +359,7 @@ static void publish_snapshot(app_controller_t *controller, int64_t now_us)
         .obstacle_state = controller->obstacle.state,
         .obstacle_clear_count = controller->obstacle.clear_count,
         .line = controller->latest_line,
+        .camera = controller->latest_camera,
         .line_pattern = controller->line_follow.pattern,
         .line_state = controller->line_follow.state,
         .line_error = controller->line_follow.error,
@@ -368,6 +384,11 @@ static void publish_snapshot(app_controller_t *controller, int64_t now_us)
             .mode = controller->mode,
             .obstacle_state = controller->obstacle.state,
             .line_pattern = line_sensor_pattern(controller->latest_line),
+            .camera_streaming = controller->latest_camera.streaming,
+            .camera_frame_valid = controller->latest_camera.frame_valid,
+            .camera_fresh = controller->latest_camera.fresh,
+            .camera_center_permille =
+                controller->latest_camera.center_permille,
             .ultrasonic_mm = snapshot.ultrasonic.filtered_mm,
             .motor = snapshot.motor,
             .finished = controller->obstacle.state ==
@@ -386,7 +407,9 @@ static void publish_snapshot(app_controller_t *controller, int64_t now_us)
 static void controller_step(app_controller_t *controller, int64_t now_us)
 {
     ultrasonic_step(&controller->ultrasonic, now_us);
-    controller->latest_line = line_sensor_read(&controller->line_sensor);
+    controller->latest_camera = camera_line_sensor_snapshot(
+        &controller->camera_line, now_us);
+    controller->latest_line = controller->latest_camera.virtual_sensors;
     ultrasonic_event_t ultrasonic_event;
     const bool has_ultrasonic_event = ultrasonic_take_event(
         &controller->ultrasonic, &ultrasonic_event);
@@ -398,6 +421,13 @@ static void controller_step(app_controller_t *controller, int64_t now_us)
     apply_intents(controller,
                   parse_commands(batch, boot_event),
                   now_us);
+
+    if (controller->mode == APP_MODE_AUTONOMOUS &&
+        !controller->latest_camera.fresh &&
+        !controller->faults[FAULT_SOURCE_CAMERA].active) {
+        set_fault(controller, FAULT_SOURCE_CAMERA, ESP_ERR_TIMEOUT,
+                  FAULT_UNRECOVERABLE_THIS_BOOT);
+    }
 
     motor_command_t final_command = motor_command_zero();
     if (controller->mode == APP_MODE_MANUAL) {
@@ -494,6 +524,8 @@ bool app_controller_init(app_controller_t *controller,
     }
     if (status_display_init(&controller->display) == ESP_OK) {
         controller->display_ready = true;
+        /* Let standalone startup show camera discovery before it can fail. */
+        enable_status_display(controller);
     } else {
         controller->degraded_bitmap |= DEGRADED_DISPLAY;
     }
@@ -518,15 +550,10 @@ bool app_controller_init(app_controller_t *controller,
                   FAULT_UNRECOVERABLE_THIS_BOOT);
         return false;
     }
-    const line_sensor_config_t line_config = {
-        .left_pin = BOARD_PIN_IR_LEFT,
-        .left_center_pin = BOARD_PIN_IR_LEFT_CENTER,
-        .right_center_pin = BOARD_PIN_IR_RIGHT_CENTER,
-        .right_pin = BOARD_PIN_IR_RIGHT,
-    };
-    result = line_sensor_init(&controller->line_sensor, &line_config);
+    result = camera_line_sensor_init(&controller->camera_line,
+                                     &config->camera_line);
     if (result != ESP_OK) {
-        set_fault(controller, FAULT_SOURCE_LINE_SENSOR, result,
+        set_fault(controller, FAULT_SOURCE_CAMERA, result,
                   FAULT_UNRECOVERABLE_THIS_BOOT);
         return false;
     }
@@ -562,12 +589,14 @@ bool app_controller_init(app_controller_t *controller,
     controller->button_ready = true;
     line_follow_init(&controller->line_follow, &config->line);
     obstacle_supervisor_init(&controller->obstacle, &config->obstacle);
-    controller->latest_line = line_sensor_read(&controller->line_sensor);
+    controller->latest_camera = camera_line_sensor_snapshot(
+        &controller->camera_line, esp_timer_get_time());
+    controller->latest_line = controller->latest_camera.virtual_sensors;
 
     if (controller->diagnostics_ready) {
         publish_event(controller, DIAGNOSTIC_EVENT_INFO,
                       esp_reset_reason(), 0,
-                      "modular firmware ready; motors stopped",
+                      "camera-line firmware ready; motors stopped",
                       esp_timer_get_time());
     }
     controller->initialized = true;

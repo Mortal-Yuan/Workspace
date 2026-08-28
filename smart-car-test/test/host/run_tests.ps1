@@ -32,6 +32,7 @@ $output = Join-Path $outputDirectory 'firmware_tests.exe'
     "-I$repository\main\platform" `
     "$PSScriptRoot\test_firmware.c" `
     "$repository\main\app\app_config.c" `
+    "$repository\main\control\camera_line_vision.c" `
     "$repository\main\control\kiwi_kinematics.c" `
     "$repository\main\control\line_follow.c" `
     "$repository\main\control\obstacle_supervisor.c" `

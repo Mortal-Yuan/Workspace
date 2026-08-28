@@ -1,0 +1,4 @@
+dependencies:
+  idf: ">=5.0"
+  usb_host_uvc: "2.5.1"
+  esp_jpeg: ">=1.0.2,<2.0.0"

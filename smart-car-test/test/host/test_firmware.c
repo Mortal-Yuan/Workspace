@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "app_config.h"
+#include "camera_line_vision.h"
 #include "driver/gpio.h"
 #include "kiwi_kinematics.h"
 #include "line_follow.h"
@@ -130,6 +131,99 @@ static line_sensor_sample_t line(bool left, bool left_center,
     return (line_sensor_sample_t) {left, left_center, right_center, right};
 }
 
+enum {
+    TEST_IMAGE_WIDTH = 160,
+    TEST_IMAGE_HEIGHT = 120,
+};
+
+static uint8_t s_test_image[TEST_IMAGE_WIDTH * TEST_IMAGE_HEIGHT * 3];
+
+static void fill_test_image(uint8_t gray)
+{
+    memset(s_test_image, gray, sizeof(s_test_image));
+}
+
+static void draw_view_rectangle(int left, int top, int right, int bottom,
+                                uint8_t gray)
+{
+    for (int y = top; y <= bottom; ++y) {
+        for (int x = left; x <= right; ++x) {
+            uint8_t *pixel = &s_test_image[
+                (y * TEST_IMAGE_WIDTH + x) * 3];
+            pixel[0] = gray;
+            pixel[1] = gray;
+            pixel[2] = gray;
+        }
+    }
+}
+
+static camera_line_analysis_t analyze_test_image(void)
+{
+    camera_line_config_t config = APP_CONFIG.camera_line;
+    /* Test geometric centering independently of installation calibration. */
+    config.center_offset_permille = 0;
+    return camera_line_analyze_rgb888(
+        s_test_image, TEST_IMAGE_WIDTH, TEST_IMAGE_HEIGHT, false,
+        &config);
+}
+
+static void test_camera_line_vision(void)
+{
+    assert(APP_CONFIG.camera_line.center_offset_permille == 37);
+    assert(line_sensor_pattern(camera_line_virtual_sensors(-601, false)) ==
+           0x08);
+    assert(line_sensor_pattern(camera_line_virtual_sensors(-600, false)) ==
+           0x04);
+    assert(line_sensor_pattern(camera_line_virtual_sensors(-200, false)) ==
+           0x06);
+    assert(line_sensor_pattern(camera_line_virtual_sensors(200, false)) ==
+           0x06);
+    assert(line_sensor_pattern(camera_line_virtual_sensors(201, false)) ==
+           0x02);
+    assert(line_sensor_pattern(camera_line_virtual_sensors(601, false)) ==
+           0x01);
+
+    fill_test_image(225);
+    camera_line_analysis_t analysis = analyze_test_image();
+    assert(analysis.valid && !analysis.line_detected);
+
+    fill_test_image(225);
+    draw_view_rectangle(74, 72, 85, 110, 25);
+    analysis = analyze_test_image();
+    assert(analysis.valid && analysis.line_detected);
+    assert(!analysis.finish_detected);
+    assert(line_sensor_pattern(analysis.virtual_sensors) == 0x06);
+    assert(analysis.center_permille == 0);
+
+    fill_test_image(225);
+    draw_view_rectangle(41, 72, 49, 110, 25);
+    analysis = analyze_test_image();
+    assert(analysis.line_detected && analysis.center_permille < -500);
+    assert(line_sensor_pattern(analysis.virtual_sensors) == 0x08);
+
+    fill_test_image(225);
+    draw_view_rectangle(110, 72, 118, 110, 25);
+    analysis = analyze_test_image();
+    assert(analysis.line_detected && analysis.center_permille > 500);
+    assert(line_sensor_pattern(analysis.virtual_sensors) == 0x01);
+
+    fill_test_image(225);
+    draw_view_rectangle(40, 90, 119, 110, 25);
+    analysis = analyze_test_image();
+    assert(analysis.line_detected && analysis.finish_detected);
+    assert(line_sensor_pattern(analysis.virtual_sensors) == 0x0f);
+
+    /* Dark objects outside the central track window must not beat the line. */
+    fill_test_image(225);
+    draw_view_rectangle(0, 72, 35, 110, 5);
+    draw_view_rectangle(124, 72, 159, 110, 5);
+    draw_view_rectangle(74, 72, 85, 110, 25);
+    analysis = analyze_test_image();
+    assert(analysis.line_detected && !analysis.finish_detected);
+    assert(line_sensor_pattern(analysis.virtual_sensors) == 0x06);
+    assert(analysis.center_permille == 0);
+}
+
 static ultrasonic_event_t ultrasonic(uint32_t seq, bool has_echo,
                                      int raw_mm, int filtered_mm,
                                      ultrasonic_quality_t quality,
@@ -213,12 +307,12 @@ static void test_kiwi_kinematics(void)
 
 static void test_line_follow_behavior(void)
 {
-    assert(APP_CONFIG.line.straight_speed == 360);
-    assert(APP_CONFIG.line.curve_speed == 250);
-    assert(APP_CONFIG.line.curve_max == 400);
-    assert(APP_CONFIG.line.edge_speed == 190);
-    assert(APP_CONFIG.line.edge_max == 320);
-    assert(APP_CONFIG.line.search_speed == 320);
+    assert(APP_CONFIG.line.straight_speed == 240);
+    assert(APP_CONFIG.line.curve_speed == 190);
+    assert(APP_CONFIG.line.curve_max == 320);
+    assert(APP_CONFIG.line.edge_speed == 160);
+    assert(APP_CONFIG.line.edge_max == 280);
+    assert(APP_CONFIG.line.search_speed == 240);
     assert(APP_CONFIG.line.kp == 100);
     assert(APP_CONFIG.line.max_correction == 250);
     assert(APP_CONFIG.line.direction_confirm_count == 3);
@@ -241,28 +335,28 @@ static void test_line_follow_behavior(void)
     assert(command.a == -500 && command.c == -500);
     command = line_follow_step(
         &controller, line(false, true, true, false), 400, 150000);
-    assert(command.a == -360 && command.c == -360);
+    assert(command.a == -240 && command.c == -240);
 
     for (int index = 0; index < 3; ++index) {
         command = line_follow_step(
             &controller, line(false, false, false, true), 400,
             200000 + index * 20000);
-        assert(command.a == 100 && command.b == 0 && command.c == -320);
+        assert(command.a == 100 && command.b == 0 && command.c == -280);
     }
     assert(controller.locked_direction == 1);
     assert(controller.error == 6 && controller.control_error == 6);
     command = line_follow_step(&controller, line(false, true, false, false),
                                400, 260000);
-    assert(command.a == 43 && command.b == 0 && command.c == -320);
+    assert(command.a == 61 && command.b == 0 && command.c == -280);
     assert(controller.locked_direction == 1);
     assert(controller.control_error == 4);
     command = line_follow_step(&controller, line(false, false, false, false),
                                400, 300000);
-    assert(command.a == 500 && command.b == 0 && command.c == -320);
+    assert(command.a == 500 && command.b == 0 && command.c == -240);
     assert(controller.state == LINE_STATE_SEARCH_RIGHT);
     command = line_follow_step(&controller, line(false, false, false, false),
                                400, 460000);
-    assert(command.a == 320 && command.b == 0 && command.c == -320);
+    assert(command.a == 240 && command.b == 0 && command.c == -240);
 
     line_follow_reset_for_start(&controller, line(true, false, false, false));
     command = line_follow_step(&controller, line(true, false, false, false),
@@ -270,20 +364,20 @@ static void test_line_follow_behavior(void)
     assert(command.a == -500 && command.b == 0 && command.c == 100);
     command = line_follow_step(&controller, line(true, false, false, false),
                                400, 150000);
-    assert(command.a == -320 && command.c == 100);
+    assert(command.a == -280 && command.c == 100);
 
     line_follow_reset_for_start(&controller, line(false, true, true, true));
     command = line_follow_step(&controller, line(false, true, true, true),
                                400, 0);
-    assert(command.a == -44 && command.b == 0 && command.c == -500);
+    assert(command.a == 8 && command.b == 0 && command.c == -500);
 
     command = line_follow_step(&controller, line(false, true, true, true),
                                400, 150000);
-    assert(command.a == -44 && command.b == 0 && command.c == -400);
+    assert(command.a == 8 && command.b == 0 && command.c == -320);
 
     command = line_follow_step(&controller, line(true, false, true, false),
                                400, 170000);
-    assert(command.a == -500 && command.b == 0 && command.c == -44);
+    assert(command.a == -500 && command.b == 0 && command.c == 8);
 
     line_follow_reset_for_start(&controller, line(false, false, true, false));
     command = line_follow_step(&controller, line(false, false, true, false),
@@ -291,7 +385,7 @@ static void test_line_follow_behavior(void)
     assert(command.a == 100 && command.b == 0 && command.c == -500);
     command = line_follow_step(&controller, line(false, false, true, false),
                                400, 150000);
-    assert(command.a == 100 && command.b == 0 && command.c == -320);
+    assert(command.a == 100 && command.b == 0 && command.c == -280);
 
     line_follow_reset_for_start(&controller, line(false, true, false, false));
     command = line_follow_step(&controller, line(false, true, false, false),
@@ -299,7 +393,7 @@ static void test_line_follow_behavior(void)
     assert(command.a == -500 && command.b == 0 && command.c == 100);
     command = line_follow_step(&controller, line(false, true, false, false),
                                400, 150000);
-    assert(command.a == -320 && command.b == 0 && command.c == 100);
+    assert(command.a == -280 && command.b == 0 && command.c == 100);
 
     line_follow_reset_for_start(&controller, line(false, false, false, false));
     command = line_follow_step(&controller, line(false, false, false, false),
@@ -308,7 +402,7 @@ static void test_line_follow_behavior(void)
     assert(controller.state == LINE_STATE_SEARCH_LEFT);
     command = line_follow_step(&controller, line(false, false, false, false),
                                400, 150000);
-    assert(command.a == -320 && command.b == 0 && command.c == 320);
+    assert(command.a == -240 && command.b == 0 && command.c == 240);
 
     line_follow_suspend(&controller);
     line_follow_resume(&controller);
@@ -703,6 +797,7 @@ int main(void)
     invalid.obstacle.clear_confirm_count = 0;
     assert(!app_config_validate(&invalid));
     test_kiwi_kinematics();
+    test_camera_line_vision();
     test_line_follow_behavior();
     test_obstacle_supervisor();
     test_automatic_bypass_sequence();

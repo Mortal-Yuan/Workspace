@@ -5,10 +5,6 @@
 
 enum {
     BOARD_PIN_START_BUTTON = GPIO_NUM_0,
-    BOARD_PIN_IR_RIGHT = GPIO_NUM_1,
-    BOARD_PIN_IR_RIGHT_CENTER = GPIO_NUM_2,
-    BOARD_PIN_IR_LEFT_CENTER = GPIO_NUM_4,
-    BOARD_PIN_IR_LEFT = GPIO_NUM_5,
     BOARD_PIN_US_TRIG = GPIO_NUM_6,
     BOARD_PIN_MOTOR_ENABLE = GPIO_NUM_7,
     BOARD_PIN_ENCODER_A_B = GPIO_NUM_8,
@@ -23,8 +19,11 @@ enum {
     BOARD_PIN_MOTOR_C_IN1 = GPIO_NUM_17,
     BOARD_PIN_ENCODER_A_A = GPIO_NUM_18,
     BOARD_PIN_MOTOR_C_IN2 = GPIO_NUM_21,
-    /* GPIO20 is USB D+ until the runtime display explicitly claims it. */
-    BOARD_PIN_DISPLAY_MOSI = GPIO_NUM_20,
+    /* GPIO19/20 are permanently reserved for the UVC camera USB D-/D+. */
+    BOARD_PIN_CAMERA_USB_D_MINUS = GPIO_NUM_19,
+    BOARD_PIN_CAMERA_USB_D_PLUS = GPIO_NUM_20,
+    /* GPIO5 was released when the four-channel infrared board was removed. */
+    BOARD_PIN_DISPLAY_MOSI = GPIO_NUM_5,
     BOARD_PIN_DISPLAY_CS = GPIO_NUM_3,
     BOARD_PIN_DISPLAY_DC = GPIO_NUM_38,
     BOARD_PIN_DISPLAY_SCLK = GPIO_NUM_45,
