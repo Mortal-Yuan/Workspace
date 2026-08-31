@@ -23,15 +23,16 @@ const app_config_t APP_CONFIG = {
     },
     .line = {
         /* Keep the 8/25 geometry while adding selective drive-wheel authority. */
-        /* Conservative camera bring-up speeds; raise only after track tests. */
-        .straight_speed = 240,
-        .curve_speed = 190,
-        .curve_max = 320,
-        .edge_speed = 160,
-        .edge_max = 280,
-        .search_speed = 240,
-        .kp = 100,
-        .max_correction = 250,
+        /* Normal line-follow motion raised 20%; search is unchanged. */
+        .straight_speed = 348,
+        .curve_speed = 276,
+        .curve_max = 384,
+        .edge_speed = 233,
+        .edge_max = 336,
+        /* 192 raised 10% and rounded to the nearest integer command. */
+        .search_speed = 211,
+        .kp = 120,
+        .max_correction = 300,
         .direction_confirm_count = 3,
         .direction_hold_error = 4,
         .single_sensor_inner_command = 100,
@@ -39,6 +40,19 @@ const app_config_t APP_CONFIG = {
         .drive_assist_threshold = 200,
         .drive_assist_command = 500,
         .drive_assist_ms = 150,
+        /* Delay only the onset of a newly established camera turn. */
+        .turn_memory_threshold_permille = 180,
+        .turn_memory_release_permille = 80,
+        .turn_memory_ms = 180,
+        /* Continue the last proven trajectory across a brief near blind spot. */
+        .lost_motion_memory_ms = 120,
+        /* Expanding in-place search: 1.2, 2.4, ... 7.2 second legs. */
+        .lost_search_delay_ms = 150,
+        .search_direction_threshold_permille = 100,
+        .search_primary_ms = 1200,
+        .search_reverse_ms = 2400,
+        .search_max_sweep_ms = 7200,
+        .search_reacquire_frames = 3,
     },
     .camera_line = {
         /* Analyze the nearest central track window in the native view. */
@@ -46,13 +60,19 @@ const app_config_t APP_CONFIG = {
         .roi_right_permille = 750,
         .roi_top_permille = 600,
         .roi_bottom_permille = 930,
-        /* Median of 35 centered, sub-pixel samples was -37. */
-        .center_offset_permille = 37,
+        .horizontal_scale_permille = 1000,
+        /* 2026-08-31 geometric-center recalibration: +202 -> 0. */
+        .center_offset_permille = -165,
         .minimum_contrast = 30,
-        .minimum_column_fill_permille = 150,
-        .minimum_component_pixels = 24,
+        .heading_gain_permille = 500,
+        /* Avoid near/far cancellation when a connected line crosses the view
+         * in a sharp hairpin. */
+        .hairpin_near_threshold_permille = 160,
+        .hairpin_heading_threshold_permille = 300,
+        .hairpin_heading_gain_permille = 100,
         .finish_width_permille = 700,
         .finish_black_permille = 350,
+        .finish_arm_frames = 3,
         /* Three to four missing 15 fps frames stop autonomous motion. */
         .fresh_ms = 350,
     },
@@ -153,6 +173,7 @@ bool app_config_validate(const app_config_t *config)
         valid_command(config->line.edge_speed) &&
         valid_command(config->line.edge_max) &&
         valid_command(config->line.search_speed) &&
+        config->line.search_speed > 0 &&
         config->line.kp > 0 &&
         valid_command(config->line.max_correction) &&
         config->line.direction_confirm_count > 0 &&
@@ -166,6 +187,31 @@ bool app_config_validate(const app_config_t *config)
             config->line.drive_assist_threshold &&
         valid_command(config->line.drive_assist_command) &&
         config->line.drive_assist_ms > 0 &&
+        config->line.turn_memory_threshold_permille > 0 &&
+        config->line.turn_memory_threshold_permille <= 1000 &&
+        config->line.turn_memory_release_permille >= 0 &&
+        config->line.turn_memory_release_permille <
+            config->line.turn_memory_threshold_permille &&
+        config->line.turn_memory_ms >= 0 &&
+        config->line.turn_memory_ms <= 1000 &&
+        config->line.lost_motion_memory_ms >= 0 &&
+        config->line.lost_motion_memory_ms <=
+            config->line.lost_search_delay_ms &&
+        config->line.lost_search_delay_ms >= 0 &&
+        config->line.lost_search_delay_ms <= 1000 &&
+        config->line.search_direction_threshold_permille > 0 &&
+        config->line.search_direction_threshold_permille <= 1000 &&
+        config->line.search_primary_ms > 0 &&
+        config->line.search_primary_ms <= 10000 &&
+        config->line.search_reverse_ms > 0 &&
+        config->line.search_reverse_ms <= 20000 &&
+        config->line.search_reverse_ms >
+            config->line.search_primary_ms &&
+        config->line.search_max_sweep_ms >=
+            config->line.search_reverse_ms &&
+        config->line.search_max_sweep_ms <= 60000 &&
+        config->line.search_reacquire_frames >= 2 &&
+        config->line.search_reacquire_frames <= 20 &&
         config->camera_line.roi_left_permille >= 0 &&
         config->camera_line.roi_left_permille <
             config->camera_line.roi_right_permille &&
@@ -174,17 +220,27 @@ bool app_config_validate(const app_config_t *config)
         config->camera_line.roi_top_permille <
             config->camera_line.roi_bottom_permille &&
         config->camera_line.roi_bottom_permille <= 1000 &&
+        config->camera_line.horizontal_scale_permille >= 1000 &&
+        config->camera_line.horizontal_scale_permille <= 4000 &&
         config->camera_line.center_offset_permille >= -500 &&
         config->camera_line.center_offset_permille <= 500 &&
         config->camera_line.minimum_contrast >= 10 &&
         config->camera_line.minimum_contrast <= 255 &&
-        config->camera_line.minimum_column_fill_permille > 0 &&
-        config->camera_line.minimum_column_fill_permille <= 1000 &&
-        config->camera_line.minimum_component_pixels > 0 &&
+        config->camera_line.heading_gain_permille >= 0 &&
+        config->camera_line.heading_gain_permille <= 2000 &&
+        config->camera_line.hairpin_near_threshold_permille >= 0 &&
+        config->camera_line.hairpin_near_threshold_permille <= 1000 &&
+        config->camera_line.hairpin_heading_threshold_permille >= 0 &&
+        config->camera_line.hairpin_heading_threshold_permille <= 2000 &&
+        config->camera_line.hairpin_heading_gain_permille >= 0 &&
+        config->camera_line.hairpin_heading_gain_permille <=
+            config->camera_line.heading_gain_permille &&
         config->camera_line.finish_width_permille > 0 &&
         config->camera_line.finish_width_permille <= 1000 &&
         config->camera_line.finish_black_permille > 0 &&
         config->camera_line.finish_black_permille <= 1000 &&
+        config->camera_line.finish_arm_frames > 0 &&
+        config->camera_line.finish_arm_frames <= 20 &&
         config->camera_line.fresh_ms >= 100 &&
         config->button.press_debounce_ms > 0 &&
         config->button.release_rearm_ms > 0 &&

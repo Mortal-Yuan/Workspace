@@ -26,8 +26,14 @@ typedef struct {
     bool line_detected;
     bool finish_detected;
     int16_t center_permille;
+    int16_t far_center_permille;
+    int16_t heading_permille;
+    int16_t steering_permille;
     uint16_t width_permille;
+    uint16_t component_height_permille;
+    uint16_t component_area_permille;
     uint16_t black_permille;
+    uint8_t connected_component_count;
     uint8_t threshold;
     uint8_t contrast;
     uint32_t received_frames;

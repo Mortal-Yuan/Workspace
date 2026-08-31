@@ -110,7 +110,8 @@ static observation_t classify_event(obstacle_supervisor_t *supervisor,
 static void count_clear(obstacle_supervisor_t *supervisor,
                         observation_t observation, int limit)
 {
-    if (observation == OBSERVATION_CLEAR) {
+    if (observation == OBSERVATION_CLEAR ||
+        observation == OBSERVATION_NO_ECHO) {
         if (supervisor->clear_count < (uint8_t)limit) {
             supervisor->clear_count++;
         }
@@ -216,6 +217,12 @@ obstacle_decision_t obstacle_supervisor_step(
 
     switch (supervisor->state) {
     case OBSTACLE_STATE_SENSOR_CHECK:
+        /*
+         * An HC-SR04 normally produces no return when its beam sees open
+         * space.  Authorize startup after consecutive obstacle-free samples,
+         * whether they are valid far distances or clean no-return timeouts.
+         * Echo-high and malformed electrical observations remain unsafe.
+         */
         count_clear(supervisor, observation,
                     supervisor->config.clear_confirm_count);
         if (supervisor->clear_count >=
@@ -315,9 +322,12 @@ obstacle_decision_t obstacle_supervisor_step(
             supervisor->clear_count = 1;
         } else if (elapsed_us >=
                    supervisor->config.right_strafe_ms * 1000LL) {
-            enter_state(supervisor, &decision,
-                        OBSTACLE_STATE_FAILSAFE,
+            /* Failing to see the line is not a maneuver safety fault.  Stop
+             * the open-loop strafe and hand control to the alternating line
+             * search instead of latching zero output. */
+            enter_state(supervisor, &decision, OBSTACLE_STATE_CLEAR,
                         OBSTACLE_REASON_LINE_LOST, now_us);
+            decision.line_action = LINE_ACTION_RESUME;
         }
         break;
 
@@ -326,9 +336,9 @@ obstacle_decision_t obstacle_supervisor_step(
             enter_state(supervisor, &decision, OBSTACLE_STATE_FAILSAFE,
                         OBSTACLE_REASON_NEAR, now_us);
         } else if (!line_detected(line)) {
-            enter_state(supervisor, &decision,
-                        OBSTACLE_STATE_FAILSAFE,
+            enter_state(supervisor, &decision, OBSTACLE_STATE_CLEAR,
                         OBSTACLE_REASON_LINE_LOST, now_us);
+            decision.line_action = LINE_ACTION_RESUME;
         } else {
             if (supervisor->clear_count <
                 (uint8_t)supervisor->config.line_confirm_count) {

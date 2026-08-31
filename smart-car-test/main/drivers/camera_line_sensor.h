@@ -32,11 +32,17 @@ typedef struct {
     uvc_host_stream_hdl_t stream;
     uint8_t *rgb_buffer;
     size_t rgb_buffer_size;
+    camera_line_vision_workspace_t *vision_workspace;
     unsigned stream_width;
     unsigned stream_height;
     float stream_fps;
     portMUX_TYPE lock;
     camera_line_snapshot_t snapshot;
+    uint8_t normal_line_frames;
+    uint8_t missing_line_frames;
+    bool history_valid;
+    int16_t history_center_permille;
+    int16_t history_steering_permille;
     bool initialized;
 } camera_line_sensor_t;
 

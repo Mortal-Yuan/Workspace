@@ -82,10 +82,30 @@ dependency and extension contracts.
   The active line controller retains the final 2026-08-25 geometry from commit
   `da7a8aa` (source introduced by `10c8414`). It uses normalized
   `L/LC/RC/R` weights `-6/-2/+2/+6`, divides by the active-sensor count, and
-  applies `correction=clamp(error*100,-250,250)` to
+  applies `correction=clamp(error*120,-300,300)` to
   `A=-base+correction, B=0, C=-base-correction`.
-- Camera bring-up line bases/limits are straight 240, ordinary curve 190/320,
-  one-sided edge 160/280, and no-line search 240. Opposite directions require three
+- Camera line bases/limits are straight 348, ordinary curve 276/384,
+  one-sided edge 233/336, and no-line search 211. Normal driving bases, curve
+  and edge limits, proportional gain, and maximum correction are 20% above the
+  preceding 290/230/194, 320/280, 100, and 250 settings (rounded to integers).
+  This scales normal steering commands without flattening their differential;
+  search speed and timing remain unchanged. If line loss
+  immediately follows reliable cruise motion, the controller keeps the last
+  unassisted cruise command for 120 ms to cross the camera's near blind spot,
+  commands zero for the remaining 30 ms, then begins an in-place search in the
+  last reliable direction. Startup without line/motion history commands zero
+  for the full 150 ms; it never uses blind forward motion. Search speed now
+  exceeds the 200 drive-assist threshold,
+  so search start and every direction reversal use a 500 command for 150 ms
+  before settling to 211. Consecutive search legs alternate direction and last
+  1200, 2400, 3600, 4800, 6000, and 7200 ms. This reaches equivalent offsets of
+  1.2, 2.4, and 3.6 seconds on both sides of the original heading. Later legs
+  remain capped at 7200 ms and alternate indefinitely, rather than expanding
+  without bound. Search has no total timeout and continues until a connected
+  line is found. A
+  candidate stops the rotation
+  immediately and must remain valid for three distinct decoded camera frames
+  before forward line following resumes. Opposite directions require three
   consecutive samples; while unconfirmed, the locked direction is held with
   control-error magnitude at least 4. `0000` rotates in the locked direction,
   defaulting left before a direction has been learned.
@@ -123,26 +143,63 @@ dependency and extension contracts.
 - `r` runs a short A/B/C sequence.
 - `+` and `-` adjust speed.
 - USB Host receives 640x480 MJPEG at 15 fps. `esp_jpeg` decodes directly at
-  1/8 scale to 80x60; the lower 60%--93% of the native view is thresholded
-  adaptively and its largest black column component is mapped to virtual
-  `L/LC/RC/R`. Board testing sustained about 13.6 decoded frames/s with no
-  decode error or watchdog warning after adding a one-tick yield per frame.
-- Line following consumes the virtual `L,LC,RC,R`, actively steers with A/C
-  differential correction, and searches after line loss. Place the car on the
-  line before BOOT. BOOT/`f` is ignored until a fresh camera result exists; a
-  camera result older than 350 ms during autonomy enters `FAULT` and disables
-  the motors in that control cycle.
+  1/8 scale to 80x60, and only the lower half reaches the vision entry point.
+  The active native-view ROI uses the central horizontal span
+  `x=25%..75%` while retaining `y=60%..93%`. Horizontal coordinates, component
+  width, and component area use the calibrated 1x logical scale. The dark
+  histogram percentile is 2% for the restored central-width background. An adaptive
+  threshold is followed by true 8-neighbour two-dimensional connected-component
+  labeling. Every non-empty connected component is eligible. Without a stable
+  line history, the component with the largest pixel area is selected. After
+  three consecutive ordinary-line frames, the last reliable near position and
+  steering direction softly rank later components by
+  `area/(250 + position_error + steering_error)`. There is no minimum area,
+  bottom-touch, height, width, initial-center, or history-jump gate: a large
+  jump loses score but is never rejected, and a sole connected component is
+  still accepted. Disconnected islands do not merge.
+- Each accepted component produces a near center, a far center, and
+  `heading=far-near` from that component's bottom and top thirds. Continuous
+  steering normally uses `near + heading*0.5`, so the visible line beginning
+  about 10 cm ahead is used as a fixed lookahead rather than pretending to
+  measure under the wheels. On a sharp hairpin where near and far lie on
+  opposite image sides (`abs(near)>=160`, `abs(heading)>=300`), the heading
+  gain falls to 0.1. This prevents the far term from cancelling the near error;
+  the captured `near=+250, far=-160` case changes from about `steer=+45` to
+  `+209`. Candidate eligibility remains pure connected-component selection.
+  When a newly established camera turn reaches 180 permille, the controller
+  holds the previous proven cruise trajectory for 180 ms before applying the
+  turn. The turn latch releases below 80 permille so it cannot restart on every
+  frame.
+  The line controller scales this steering continuously to its +/-300 maximum
+  correction at +/-600 permille; virtual `L/LC/RC/R` remains available for
+  pattern state, direction validation, obstacle recovery, and diagnostics.
+- Position and steering history participate only in soft candidate ranking,
+  never in candidate acceptance. A wide finish candidate is armed only after
+  three accepted normal-line frames; before arming,
+  the same connected shape remains usable as an ordinary line instead of being
+  rejected. Vision scratch buffers live in one
+  PSRAM workspace allocated at camera initialization, not on the decode-task
+  stack and not per frame.
+- Line following actively steers with A/C differential correction and searches
+  after line loss. BOOT/`f` requires a fresh decoded camera result but no longer
+  requires a currently accepted connected line. A fresh `CAM=0000` result,
+  including low contrast or no connected component, starts autonomy and enters
+  the alternating search. A camera result older than 350 ms during autonomy is
+  a camera safety failure: it enters `FAULT` and disables the motors in that
+  control cycle.
 - Telemetry prints the virtual pattern plus camera freshness, decoded sequence,
-  center, width, black fraction, threshold, contrast, drops, errors, ultrasonic
-  distance, and A/B/C encoder counts. In the virtual pattern, `1` means the
+  near center (`pos`), far center, heading, steering, width, connected-component
+  count/height/area (`comp=count/height/area`), black fraction, threshold,
+  contrast, drops, errors, ultrasonic distance, and A/B/C encoder counts. In the virtual pattern, `1` means the
   corresponding camera-derived lane region sees black.
 - Camera vision analyzes the native view's central near-track window
-  (`x=25%..75%`, `y=60%..93%`). Horizontal center and component width are
-  normalized to that window, so dark laboratory background outside it cannot
-  dominate the actual line. The remounted camera uses a +37 permille center
-  offset from the median of 35 centered, sub-pixel telemetry samples. The
-  weighted centroid retains fractional-column precision before normalization.
-  A final 35-sample run reported median center 0 and range 0..5, always `0110`.
+  (`x=25%..75%`, `y=60%..93%`). Pixels outside that horizontal window are not
+  included in the histogram, connected components, or line tracking. The
+  current geometric-center calibration uses a
+  -165 permille installation offset. After reflashing, a 20-second stationary
+  run reported `pos=-41..-39`, `steer=-54..-53`, always `0110`, with no camera
+  drop or decode error. The weighted centroid retains fractional-column
+  precision before normalization.
 - The cropped window is divided into five equal steering bands at -600, -200,
   +200, and +600 permille. The wider center band avoids one-pixel quantization
   jitter toggling a physically centered car between straight and curve.
@@ -151,10 +208,10 @@ dependency and extension contracts.
 - HC-SR04 samples have `VALID/OUTLIER/LOST/INVALID/NO_RETURN` quality, actual
   Echo edge-level validation, a three-sample median, and jump confirmation.
   Ranging now uses a nominal 45 ms deadline and a 70 ms trigger period. A
-  completed pulse above 4000 mm is reported as `NO_RETURN` (`q=5`). Once
-  startup has been authorized, completed no-return pulses, low-Echo timeouts,
-  and clean far-distance `OUTLIER` jumps are treated as normal open space and
-  do not leave `CLEAR`. In active line following, the 20--100 mm raw-distance
+  completed pulse above 4000 mm is reported as `NO_RETURN` (`q=5`). Completed
+  no-return pulses, low-Echo timeouts, and clean far-distance `OUTLIER` jumps
+  are treated as normal open space both during startup authorization and after
+  entering `CLEAR`. In active line following, the 20--100 mm raw-distance
   test is the only ultrasonic condition allowed to interrupt `CLEAR`; even an
   Echo-high or malformed-edge diagnostic does not alter the line policy.
   Automatic bypass
@@ -170,11 +227,16 @@ dependency and extension contracts.
   All segments still require ruler calibration.
   The right segment is a 960 ms maximum: its first black sample writes zero in
   the same 20 ms control cycle, then five stationary confirmation cycles precede
-  line-follow resume. No line by the deadline or loss during confirmation enters
-  `FAILSAFE`. Before a bypass completes, `1111` remains an ordinary line pattern;
-  afterward it enters a separate latched `FINISHED` stop state.
-- Ultrasonic authorization is fail-safe: startup requires three consecutive
-  valid far-Echo observations. After entering normal `CLEAR` line following,
+  line-follow resume. No line by the deadline or loss during confirmation stops
+  the open-loop strafe and resumes the alternating line search instead of
+  entering `FAILSAFE`. Near-obstacle and repeated ultrasonic uncertainty faults
+  remain fail-safe stops. Before a bypass completes, `1111` remains an ordinary
+  line pattern; afterward it enters a separate latched `FINISHED` stop state.
+- Ultrasonic authorization requires three consecutive obstacle-free
+  observations; either a valid far Echo or clean low-Echo no-return/timeout
+  counts, matching the mostly open competition course. Echo-high, malformed,
+  or electrically uncertain samples never authorize startup. After entering
+  normal `CLEAR` line following,
   every ultrasonic result other than a raw Echo from 20 through 100 mm is
   diagnostic-only and cannot stop or modify line following. Fixed-distance
   bypass segments do not interpret no-Echo as an obstacle-edge completion

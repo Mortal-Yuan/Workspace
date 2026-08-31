@@ -192,7 +192,8 @@ static void diagnostics_task(void *arg)
                 scratch, sizeof(scratch),
                 "STATUS t=%" PRId64 "ms mode=%s obstacle=%u progress=%u "
                 "CAM=%d%d%d%d pattern=%x fresh=%d seq=%" PRIu32
-                " pos=%d width=%u black=%u thr=%u contrast=%u "
+                " pos=%d far=%d head=%d steer=%d width=%u "
+                "comp=%u/%u/%u black=%u thr=%u contrast=%u "
                 "cam_drop=%" PRIu32 " cam_err=%" PRIu32
                 " line=%d err=%d/%d base=%d "
                 "us=%" PRId32 "/%" PRId32
@@ -207,7 +208,13 @@ static void diagnostics_task(void *arg)
                 (unsigned)snapshot.line_pattern, snapshot.camera.fresh,
                 snapshot.camera.decoded_frames,
                 snapshot.camera.center_permille,
+                snapshot.camera.far_center_permille,
+                snapshot.camera.heading_permille,
+                snapshot.camera.steering_permille,
                 (unsigned)snapshot.camera.width_permille,
+                (unsigned)snapshot.camera.connected_component_count,
+                (unsigned)snapshot.camera.component_height_permille,
+                (unsigned)snapshot.camera.component_area_permille,
                 (unsigned)snapshot.camera.black_permille,
                 (unsigned)snapshot.camera.threshold,
                 (unsigned)snapshot.camera.contrast,

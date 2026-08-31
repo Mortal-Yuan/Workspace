@@ -451,9 +451,12 @@ static void controller_step(app_controller_t *controller, int64_t now_us)
             line_follow_resume(&controller->line_follow);
         }
         if (decision.policy == MOTION_POLICY_LINE_FOLLOW) {
-            final_command = line_follow_step(
+            final_command = line_follow_step_camera(
                 &controller->line_follow,
                 controller->latest_line,
+                controller->latest_camera.line_detected,
+                controller->latest_camera.steering_permille,
+                controller->latest_camera.decoded_frames,
                 controller->speed, now_us);
         } else if (decision.policy == MOTION_POLICY_OVERRIDE) {
             final_command = kiwi_inverse_kinematics(

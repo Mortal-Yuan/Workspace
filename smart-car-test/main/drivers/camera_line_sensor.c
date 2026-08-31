@@ -31,6 +31,11 @@ static const camera_stream_profile_t CAMERA_PROFILES[] = {
 
 static const char *TAG = "camera_line";
 
+static int clamp_int(int value, int minimum, int maximum)
+{
+    return value < minimum ? minimum : value > maximum ? maximum : value;
+}
+
 static const camera_stream_profile_t *active_profile(
     const camera_line_sensor_t *sensor)
 {
@@ -124,21 +129,76 @@ static void publish_analysis(camera_line_sensor_t *sensor,
                              int64_t now_us)
 {
     portENTER_CRITICAL(&sensor->lock);
+    const bool reliable_history_candidate =
+        analysis.line_detected && !analysis.finish_detected;
+    const bool finish_suppressed = analysis.finish_detected &&
+        sensor->normal_line_frames < sensor->config.finish_arm_frames;
+    if (finish_suppressed) {
+        /* A wide dark object at startup is not a finish line.  The finish
+         * shape is armed only after a normal connected track was followed.
+         * It remains a valid connected line instead of being rejected. */
+        analysis.finish_detected = false;
+        analysis.virtual_sensors = camera_line_virtual_sensors(
+            analysis.steering_permille, false);
+    }
     if (analysis.line_detected && sensor->snapshot.line_detected &&
         !analysis.finish_detected) {
         analysis.center_permille = (int16_t)(
             (2 * sensor->snapshot.center_permille +
              analysis.center_permille) / 3);
+        analysis.far_center_permille = (int16_t)(
+            (2 * sensor->snapshot.far_center_permille +
+             analysis.far_center_permille) / 3);
+        analysis.heading_permille = (int16_t)clamp_int(
+            analysis.far_center_permille - analysis.center_permille,
+            -2000, 2000);
+        analysis.steering_permille = (int16_t)clamp_int(
+            camera_line_steering_from_geometry(
+                analysis.center_permille, analysis.far_center_permille,
+                &sensor->config),
+            -1000, 1000);
         analysis.virtual_sensors = camera_line_virtual_sensors(
-            analysis.center_permille, false);
+            analysis.steering_permille, false);
+    }
+    if (analysis.line_detected) {
+        sensor->missing_line_frames = 0;
+        if (!analysis.finish_detected && !finish_suppressed &&
+            sensor->normal_line_frames < UINT8_MAX) {
+            ++sensor->normal_line_frames;
+        }
+    } else {
+        if (sensor->missing_line_frames < UINT8_MAX) {
+            ++sensor->missing_line_frames;
+        }
+        if (sensor->missing_line_frames >= sensor->config.finish_arm_frames) {
+            sensor->normal_line_frames = 0;
+        }
+    }
+    /* Seed history only after the normal connected line has been stable long
+     * enough to arm ordinary following.  Wide finish-like regions do not
+     * overwrite it, including while finish recognition is suppressed. */
+    if (reliable_history_candidate &&
+        sensor->normal_line_frames >= sensor->config.finish_arm_frames) {
+        sensor->history_valid = true;
+        sensor->history_center_permille = analysis.center_permille;
+        sensor->history_steering_permille = analysis.steering_permille;
     }
     sensor->snapshot.virtual_sensors = analysis.virtual_sensors;
     sensor->snapshot.frame_valid = analysis.valid;
     sensor->snapshot.line_detected = analysis.line_detected;
     sensor->snapshot.finish_detected = analysis.finish_detected;
     sensor->snapshot.center_permille = analysis.center_permille;
+    sensor->snapshot.far_center_permille = analysis.far_center_permille;
+    sensor->snapshot.heading_permille = analysis.heading_permille;
+    sensor->snapshot.steering_permille = analysis.steering_permille;
     sensor->snapshot.width_permille = analysis.width_permille;
+    sensor->snapshot.component_height_permille =
+        analysis.component_height_permille;
+    sensor->snapshot.component_area_permille =
+        analysis.component_area_permille;
     sensor->snapshot.black_permille = analysis.black_permille;
+    sensor->snapshot.connected_component_count =
+        analysis.connected_component_count;
     sensor->snapshot.threshold = analysis.threshold;
     sensor->snapshot.contrast = analysis.contrast;
     sensor->snapshot.updated_us = now_us;
@@ -177,10 +237,21 @@ static void decode_task(void *argument)
         if (decode_result == ESP_OK &&
             output.width <= CAMERA_LINE_OUTPUT_WIDTH &&
             output.height <= CAMERA_LINE_OUTPUT_HEIGHT) {
+            bool has_previous_line = false;
+            int previous_center_permille = 0;
+            int previous_steering_permille = 0;
+            portENTER_CRITICAL(&sensor->lock);
+            has_previous_line = sensor->history_valid;
+            previous_center_permille = sensor->history_center_permille;
+            previous_steering_permille =
+                sensor->history_steering_permille;
+            portEXIT_CRITICAL(&sensor->lock);
             const camera_line_analysis_t analysis =
-                camera_line_analyze_rgb888(
+                camera_line_analyze_lower_half_rgb888_with_hint(
                     sensor->rgb_buffer, output.width, output.height, false,
-                    &sensor->config);
+                    &sensor->config, sensor->vision_workspace,
+                    has_previous_line, previous_center_permille,
+                    previous_steering_permille);
             if (analysis.valid) {
                 publish_analysis(sensor, analysis, esp_timer_get_time());
             } else {
@@ -263,6 +334,10 @@ esp_err_t camera_line_sensor_init(camera_line_sensor_t *sensor,
     sensor->rgb_buffer = heap_caps_malloc(
         sensor->rgb_buffer_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (sensor->rgb_buffer == NULL) return ESP_ERR_NO_MEM;
+    sensor->vision_workspace = heap_caps_calloc(
+        1, sizeof(*sensor->vision_workspace),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (sensor->vision_workspace == NULL) return ESP_ERR_NO_MEM;
 
     sensor->frame_queue = xQueueCreateStatic(
         1, sizeof(uvc_host_frame_t *), sensor->frame_queue_storage,
@@ -305,7 +380,8 @@ esp_err_t camera_line_sensor_init(camera_line_sensor_t *sensor,
     update_streaming(sensor, true);
     sensor->initialized = true;
     ESP_LOGI(TAG,
-             "camera line sensor started; analysis=%dx%d native orientation",
+             "camera line sensor started; decode=%dx%d lower-half analysis "
+             "native orientation",
              CAMERA_LINE_OUTPUT_WIDTH, CAMERA_LINE_OUTPUT_HEIGHT);
     return ESP_OK;
 }

@@ -11,7 +11,7 @@
 #include "freertos/task.h"
 
 #define DIAGNOSTICS_CRITICAL_DEPTH 16
-#define DIAGNOSTICS_MESSAGE_MAX 384
+#define DIAGNOSTICS_MESSAGE_MAX 512
 #define DIAGNOSTICS_TASK_STACK 4096
 
 typedef struct {

@@ -27,6 +27,16 @@ typedef struct {
     int drive_assist_threshold;
     int drive_assist_command;
     int drive_assist_ms;
+    int turn_memory_threshold_permille;
+    int turn_memory_release_permille;
+    int turn_memory_ms;
+    int lost_motion_memory_ms;
+    int lost_search_delay_ms;
+    int search_direction_threshold_permille;
+    int search_primary_ms;
+    int search_reverse_ms;
+    int search_max_sweep_ms;
+    int search_reacquire_frames;
 } line_follow_config_t;
 
 typedef struct {
@@ -34,12 +44,16 @@ typedef struct {
     int roi_right_permille;
     int roi_top_permille;
     int roi_bottom_permille;
+    int horizontal_scale_permille;
     int center_offset_permille;
     int minimum_contrast;
-    int minimum_column_fill_permille;
-    int minimum_component_pixels;
+    int heading_gain_permille;
+    int hairpin_near_threshold_permille;
+    int hairpin_heading_threshold_permille;
+    int hairpin_heading_gain_permille;
     int finish_width_permille;
     int finish_black_permille;
+    int finish_arm_frames;
     int fresh_ms;
 } camera_line_config_t;
 
