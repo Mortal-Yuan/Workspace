@@ -11,6 +11,9 @@ enum {
      * match.  History changes ranking smoothly; it never rejects a jump. */
     CAMERA_LINE_HISTORY_ERROR_FLOOR = 250,
     CAMERA_LINE_HISTORY_SCORE_SCALE = 1000000,
+    /* Keep the adaptive Otsu split, but admit less of the grey transition
+     * around the genuinely dark track than the previous contrast / 8 bias. */
+    CAMERA_LINE_THRESHOLD_CONTRAST_DIVISOR = 16,
 };
 
 static int clamp_int(int value, int minimum, int maximum)
@@ -145,6 +148,18 @@ static int center_from_pixels(uint64_t sum_x, uint32_t count,
     return divide_round_nearest(centered_twice * 1000LL, denominator);
 }
 
+bool camera_line_finish_confirmed(bool candidate, int required_frames,
+                                  uint8_t *candidate_frames)
+{
+    if (candidate_frames == NULL || required_frames <= 0) return false;
+    if (!candidate) {
+        *candidate_frames = 0;
+        return false;
+    }
+    if (*candidate_frames < UINT8_MAX) ++*candidate_frames;
+    return *candidate_frames >= required_frames;
+}
+
 static camera_line_analysis_t camera_line_analyze_rgb888_internal(
     const uint8_t *pixels, size_t width, size_t height,
     bool rotate_180, const camera_line_config_t *config,
@@ -202,8 +217,12 @@ static camera_line_analysis_t camera_line_analyze_rgb888_internal(
     if (result.contrast < config->minimum_contrast) return result;
 
     int threshold = otsu_threshold(histogram, roi_pixels) +
-                    result.contrast / 8;
+                    result.contrast /
+                        CAMERA_LINE_THRESHOLD_CONTRAST_DIVISOR;
     threshold = clamp_int(threshold, dark, light - 1);
+    if (threshold > config->maximum_black_gray) {
+        threshold = config->maximum_black_gray;
+    }
     result.threshold = (uint8_t)threshold;
 
     uint8_t *mask = workspace->mask;

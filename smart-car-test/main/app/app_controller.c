@@ -28,6 +28,7 @@ typedef struct {
     bool clear_encoder;
     bool help;
     bool enable_display;
+    bool camera_view;
 } command_intents_t;
 
 static void enable_status_display(app_controller_t *controller)
@@ -137,6 +138,11 @@ static void start_autonomy(app_controller_t *controller, int64_t now_us,
                       ESP_ERR_TIMEOUT, 0, "camera_not_ready", now_us);
         return;
     }
+    camera_line_sensor_set_finish_detection_enabled(
+        &controller->camera_line, false);
+    controller->latest_camera = camera_line_sensor_snapshot(
+        &controller->camera_line, now_us);
+    controller->latest_line = controller->latest_camera.virtual_sensors;
     line_follow_reset_for_start(&controller->line_follow,
                                 controller->latest_line);
     obstacle_supervisor_reset(&controller->obstacle);
@@ -168,6 +174,7 @@ static command_intents_t parse_commands(command_batch_t batch,
         case 'c': intents.clear_encoder = true; break;
         case 'h': intents.help = true; break;
         case 'v': intents.enable_display = true; break;
+        case 'p': intents.camera_view = true; break;
         default: break;
         }
     }
@@ -315,7 +322,19 @@ static void apply_intents(app_controller_t *controller,
     if (intents.help) {
         publish_event(controller, DIAGNOSTIC_EVENT_INFO, 0,
                       controller->speed,
-                      "q/e strafe; g forward; v display; x stop",
+                      "q/e strafe; g forward; p camera view; v display; x stop",
+                      now_us);
+    }
+    if (intents.camera_view) {
+        const bool safe_to_dump = controller->mode == APP_MODE_IDLE &&
+            !intents.force_auto && !intents.boot && !intents.motion &&
+            !intents.self_test;
+        const bool accepted = safe_to_dump &&
+            camera_line_sensor_request_ascii_view(&controller->camera_line);
+        publish_event(controller, DIAGNOSTIC_EVENT_INFO,
+                      accepted ? 0 : ESP_ERR_INVALID_STATE, 0,
+                      accepted ? "camera_view_requested" :
+                                 "camera_view_requires_idle",
                       now_us);
     }
     if (intents.enable_display && !intents.stop) {
@@ -439,6 +458,9 @@ static void controller_step(app_controller_t *controller, int64_t now_us)
             &controller->obstacle,
             has_ultrasonic_event ? &ultrasonic_event : NULL,
             controller->latest_line, now_us);
+        /* Camera-shape finish recognition is intentionally dormant.  The
+         * obstacle supervisor now owns completion: after line recovery it
+         * follows the line for a fixed 1000 ms and then latches FINISHED. */
         if (decision.transition != OBSTACLE_TRANSITION_NONE) {
             publish_event(controller, DIAGNOSTIC_EVENT_OBSTACLE,
                           decision.transition, decision.reason,
@@ -554,7 +576,8 @@ bool app_controller_init(app_controller_t *controller,
         return false;
     }
     result = camera_line_sensor_init(&controller->camera_line,
-                                     &config->camera_line);
+                                     &config->camera_line,
+                                     &config->camera_ball);
     if (result != ESP_OK) {
         set_fault(controller, FAULT_SOURCE_CAMERA, result,
                   FAULT_UNRECOVERABLE_THIS_BOOT);

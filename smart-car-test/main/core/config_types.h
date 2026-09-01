@@ -47,15 +47,30 @@ typedef struct {
     int horizontal_scale_permille;
     int center_offset_permille;
     int minimum_contrast;
+    int maximum_black_gray;
     int heading_gain_permille;
     int hairpin_near_threshold_permille;
     int hairpin_heading_threshold_permille;
     int hairpin_heading_gain_permille;
     int finish_width_permille;
     int finish_black_permille;
-    int finish_arm_frames;
+    int history_arm_frames;
+    int finish_confirm_frames;
     int fresh_ms;
 } camera_line_config_t;
+
+typedef struct {
+    int red_minimum;
+    int red_dominance;
+    int red_ratio_permille;
+    int minimum_mean_red_dominance;
+    int minimum_area_permille;
+    int minimum_fill_permille;
+    int minimum_roundness_permille;
+    int edge_margin_pixels;
+    int tracking_tolerance_permille;
+    int confirm_frames;
+} camera_ball_config_t;
 
 typedef struct {
     int timeout_us;
@@ -83,6 +98,7 @@ typedef struct {
     int forward_start_speed;
     int forward_drive_ms;
     int right_strafe_ms;
+    int post_bypass_forward_ms;
 } obstacle_config_t;
 
 typedef struct {

@@ -195,6 +195,9 @@ static void diagnostics_task(void *arg)
                 " pos=%d far=%d head=%d steer=%d width=%u "
                 "comp=%u/%u/%u black=%u thr=%u contrast=%u "
                 "cam_drop=%" PRIu32 " cam_err=%" PRIu32
+                " BALL=%u/%d/%d/%u bxy=%d/%u bwh=%u/%u ba=%u "
+                "bshape=%u/%u bconf=%u brgb=%u/%u/%u bpix=%u bc=%u "
+                "bprobe=%d/%d/%u/%u/%u/%u "
                 " line=%d err=%d/%d base=%d "
                 "us=%" PRId32 "/%" PRId32
                 " q=%d echo=%d wait=%d timeout=%" PRIu32
@@ -220,6 +223,29 @@ static void diagnostics_task(void *arg)
                 (unsigned)snapshot.camera.contrast,
                 snapshot.camera.dropped_frames,
                 snapshot.camera.decode_errors,
+                (unsigned)snapshot.camera.ball.color,
+                snapshot.camera.ball.candidate,
+                snapshot.camera.ball.detected,
+                (unsigned)snapshot.camera.ball.stable_frames,
+                snapshot.camera.ball.center_x_permille,
+                (unsigned)snapshot.camera.ball.center_y_permille,
+                (unsigned)snapshot.camera.ball.width_permille,
+                (unsigned)snapshot.camera.ball.height_permille,
+                (unsigned)snapshot.camera.ball.area_permille,
+                (unsigned)snapshot.camera.ball.fill_permille,
+                (unsigned)snapshot.camera.ball.roundness_permille,
+                (unsigned)snapshot.camera.ball.confidence_permille,
+                (unsigned)snapshot.camera.ball.mean_red,
+                (unsigned)snapshot.camera.ball.mean_green,
+                (unsigned)snapshot.camera.ball.mean_blue,
+                (unsigned)snapshot.camera.ball.matched_pixels,
+                (unsigned)snapshot.camera.ball.component_count,
+                snapshot.camera.ball.probe_red_score,
+                snapshot.camera.ball.probe_x_permille,
+                (unsigned)snapshot.camera.ball.probe_y_permille,
+                (unsigned)snapshot.camera.ball.probe_red,
+                (unsigned)snapshot.camera.ball.probe_green,
+                (unsigned)snapshot.camera.ball.probe_blue,
                 snapshot.line_state,
                 snapshot.line_error, snapshot.line_control_error,
                 snapshot.line_base_speed,

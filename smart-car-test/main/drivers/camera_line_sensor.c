@@ -36,6 +36,30 @@ static int clamp_int(int value, int minimum, int maximum)
     return value < minimum ? minimum : value > maximum ? maximum : value;
 }
 
+static void dump_ascii_view(const uint8_t *pixels, size_t width,
+                            size_t height)
+{
+    static const char SHADES[] = "@%#*+=-:.";
+    if (pixels == NULL || width > CAMERA_LINE_OUTPUT_WIDTH ||
+        height > CAMERA_LINE_OUTPUT_HEIGHT) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "VIEW_BEGIN %ux%u", (unsigned)width, (unsigned)height);
+    for (size_t y = 0; y < height; ++y) {
+        char row[CAMERA_LINE_OUTPUT_WIDTH + 1];
+        for (size_t x = 0; x < width; ++x) {
+            const uint8_t *rgb = pixels + (y * width + x) * 3U;
+            const unsigned gray =
+                (77U * rgb[0] + 150U * rgb[1] + 29U * rgb[2]) >> 8;
+            row[x] = SHADES[gray * (sizeof(SHADES) - 2U) / 255U];
+        }
+        row[width] = '\0';
+        ESP_LOGI(TAG, "VIEW%02u:%s", (unsigned)y, row);
+    }
+    ESP_LOGI(TAG, "VIEW_END");
+}
+
 static const camera_stream_profile_t *active_profile(
     const camera_line_sensor_t *sensor)
 {
@@ -126,17 +150,24 @@ static void usb_host_event_task(void *argument)
 
 static void publish_analysis(camera_line_sensor_t *sensor,
                              camera_line_analysis_t analysis,
+                             camera_ball_observation_t ball,
                              int64_t now_us)
 {
     portENTER_CRITICAL(&sensor->lock);
     const bool reliable_history_candidate =
         analysis.line_detected && !analysis.finish_detected;
-    const bool finish_suppressed = analysis.finish_detected &&
-        sensor->normal_line_frames < sensor->config.finish_arm_frames;
+    const bool raw_finish_shape = analysis.finish_detected;
+    const bool raw_finish_candidate = raw_finish_shape &&
+        sensor->finish_detection_enabled;
+    const bool finish_confirmed = camera_line_finish_confirmed(
+        raw_finish_candidate,
+        sensor->config.finish_confirm_frames,
+        &sensor->finish_candidate_frames);
+    const bool finish_suppressed = raw_finish_shape && !finish_confirmed;
     if (finish_suppressed) {
-        /* A wide dark object at startup is not a finish line.  The finish
-         * shape is armed only after a normal connected track was followed.
-         * It remains a valid connected line instead of being rejected. */
+        /* A wide dark object while the runtime gate is closed, or for only
+         * one decoded frame after it opens, is not a finish line.  It remains
+         * a valid connected line while confirmation is incomplete. */
         analysis.finish_detected = false;
         analysis.virtual_sensors = camera_line_virtual_sensors(
             analysis.steering_permille, false);
@@ -170,15 +201,16 @@ static void publish_analysis(camera_line_sensor_t *sensor,
         if (sensor->missing_line_frames < UINT8_MAX) {
             ++sensor->missing_line_frames;
         }
-        if (sensor->missing_line_frames >= sensor->config.finish_arm_frames) {
+        if (sensor->missing_line_frames >= sensor->config.history_arm_frames) {
             sensor->normal_line_frames = 0;
+            sensor->finish_candidate_frames = 0;
         }
     }
     /* Seed history only after the normal connected line has been stable long
      * enough to arm ordinary following.  Wide finish-like regions do not
      * overwrite it, including while finish recognition is suppressed. */
     if (reliable_history_candidate &&
-        sensor->normal_line_frames >= sensor->config.finish_arm_frames) {
+        sensor->normal_line_frames >= sensor->config.history_arm_frames) {
         sensor->history_valid = true;
         sensor->history_center_permille = analysis.center_permille;
         sensor->history_steering_permille = analysis.steering_permille;
@@ -201,6 +233,34 @@ static void publish_analysis(camera_line_sensor_t *sensor,
         analysis.connected_component_count;
     sensor->snapshot.threshold = analysis.threshold;
     sensor->snapshot.contrast = analysis.contrast;
+    if (ball.candidate) {
+        const int delta_x = ball.center_x_permille -
+            sensor->ball_track_x_permille;
+        const int delta_y = (int)ball.center_y_permille -
+            sensor->ball_track_y_permille;
+        const bool same_track = sensor->ball_stable_color == ball.color &&
+            (delta_x < 0 ? -delta_x : delta_x) <=
+                sensor->ball_config.tracking_tolerance_permille &&
+            (delta_y < 0 ? -delta_y : delta_y) <=
+                sensor->ball_config.tracking_tolerance_permille;
+        if (same_track) {
+            if (sensor->ball_stable_frames < UINT8_MAX) {
+                ++sensor->ball_stable_frames;
+            }
+        } else {
+            sensor->ball_stable_color = ball.color;
+            sensor->ball_stable_frames = 1;
+        }
+        sensor->ball_track_x_permille = ball.center_x_permille;
+        sensor->ball_track_y_permille = ball.center_y_permille;
+    } else {
+        sensor->ball_stable_color = BALL_COLOR_NONE;
+        sensor->ball_stable_frames = 0;
+    }
+    ball.stable_frames = sensor->ball_stable_frames;
+    ball.detected = ball.candidate &&
+        ball.stable_frames >= sensor->ball_config.confirm_frames;
+    sensor->snapshot.ball = ball;
     sensor->snapshot.updated_us = now_us;
     ++sensor->snapshot.decoded_frames;
     portEXIT_CRITICAL(&sensor->lock);
@@ -252,12 +312,26 @@ static void decode_task(void *argument)
                     &sensor->config, sensor->vision_workspace,
                     has_previous_line, previous_center_permille,
                     previous_steering_permille);
+            const camera_ball_observation_t ball =
+                camera_ball_analyze_rgb888(
+                    sensor->rgb_buffer, output.width, output.height, false,
+                    &sensor->ball_config, sensor->ball_workspace);
+            bool dump_view = false;
+            portENTER_CRITICAL(&sensor->lock);
+            dump_view = sensor->ascii_view_requested;
+            sensor->ascii_view_requested = false;
+            portEXIT_CRITICAL(&sensor->lock);
             if (analysis.valid) {
-                publish_analysis(sensor, analysis, esp_timer_get_time());
+                publish_analysis(sensor, analysis, ball,
+                                 esp_timer_get_time());
             } else {
                 portENTER_CRITICAL(&sensor->lock);
                 ++sensor->snapshot.decode_errors;
                 portEXIT_CRITICAL(&sensor->lock);
+            }
+            if (dump_view) {
+                dump_ascii_view(sensor->rgb_buffer, output.width,
+                                output.height);
             }
         } else {
             portENTER_CRITICAL(&sensor->lock);
@@ -323,11 +397,15 @@ static esp_err_t open_camera_stream(camera_line_sensor_t *sensor)
 }
 
 esp_err_t camera_line_sensor_init(camera_line_sensor_t *sensor,
-                                  const camera_line_config_t *config)
+                                  const camera_line_config_t *config,
+                                  const camera_ball_config_t *ball_config)
 {
-    if (sensor == NULL || config == NULL) return ESP_ERR_INVALID_ARG;
+    if (sensor == NULL || config == NULL || ball_config == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
     memset(sensor, 0, sizeof(*sensor));
     sensor->config = *config;
+    sensor->ball_config = *ball_config;
     sensor->lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
     sensor->rgb_buffer_size = CAMERA_LINE_OUTPUT_WIDTH *
                               CAMERA_LINE_OUTPUT_HEIGHT * 3;
@@ -338,6 +416,10 @@ esp_err_t camera_line_sensor_init(camera_line_sensor_t *sensor,
         1, sizeof(*sensor->vision_workspace),
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (sensor->vision_workspace == NULL) return ESP_ERR_NO_MEM;
+    sensor->ball_workspace = heap_caps_calloc(
+        1, sizeof(*sensor->ball_workspace),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (sensor->ball_workspace == NULL) return ESP_ERR_NO_MEM;
 
     sensor->frame_queue = xQueueCreateStatic(
         1, sizeof(uvc_host_frame_t *), sensor->frame_queue_storage,
@@ -398,4 +480,34 @@ camera_line_snapshot_t camera_line_sensor_snapshot(
         snapshot.updated_us > 0 &&
         now_us - snapshot.updated_us <= sensor->config.fresh_ms * 1000LL;
     return snapshot;
+}
+
+bool camera_line_sensor_request_ascii_view(camera_line_sensor_t *sensor)
+{
+    if (sensor == NULL || !sensor->initialized) return false;
+    bool accepted = false;
+    portENTER_CRITICAL(&sensor->lock);
+    if (!sensor->ascii_view_requested) {
+        sensor->ascii_view_requested = true;
+        accepted = true;
+    }
+    portEXIT_CRITICAL(&sensor->lock);
+    return accepted;
+}
+
+void camera_line_sensor_set_finish_detection_enabled(
+    camera_line_sensor_t *sensor, bool enabled)
+{
+    if (sensor == NULL) return;
+    portENTER_CRITICAL(&sensor->lock);
+    if (sensor->finish_detection_enabled != enabled) {
+        sensor->finish_detection_enabled = enabled;
+        sensor->finish_candidate_frames = 0;
+        if (!enabled && sensor->snapshot.finish_detected) {
+            sensor->snapshot.finish_detected = false;
+            sensor->snapshot.virtual_sensors = camera_line_virtual_sensors(
+                sensor->snapshot.steering_permille, false);
+        }
+    }
+    portEXIT_CRITICAL(&sensor->lock);
 }

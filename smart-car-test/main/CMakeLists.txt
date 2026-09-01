@@ -3,6 +3,7 @@ idf_component_register(
         "app_main.c"
         "app/app_config.c"
         "app/app_controller.c"
+        "control/camera_ball_vision.c"
         "control/camera_line_vision.c"
         "control/kiwi_kinematics.c"
         "control/line_follow.c"

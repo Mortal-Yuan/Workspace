@@ -18,6 +18,41 @@ static inline uint8_t line_sensor_pattern(line_sensor_sample_t sample)
                      sample.right);
 }
 
+typedef enum {
+    BALL_COLOR_NONE,
+    BALL_COLOR_GREEN,
+    BALL_COLOR_RED,
+    BALL_COLOR_BLUE,
+    BALL_COLOR_YELLOW,
+} ball_color_t;
+
+typedef struct {
+    bool valid;
+    bool candidate;
+    bool detected;
+    ball_color_t color;
+    uint8_t stable_frames;
+    int16_t center_x_permille;
+    uint16_t center_y_permille;
+    uint16_t width_permille;
+    uint16_t height_permille;
+    uint16_t area_permille;
+    uint16_t fill_permille;
+    uint16_t roundness_permille;
+    uint16_t confidence_permille;
+    uint8_t mean_red;
+    uint8_t mean_green;
+    uint8_t mean_blue;
+    int16_t probe_red_score;
+    int16_t probe_x_permille;
+    uint16_t probe_y_permille;
+    uint8_t probe_red;
+    uint8_t probe_green;
+    uint8_t probe_blue;
+    uint16_t matched_pixels;
+    uint8_t component_count;
+} camera_ball_observation_t;
+
 typedef struct {
     line_sensor_sample_t virtual_sensors;
     bool streaming;
@@ -36,6 +71,7 @@ typedef struct {
     uint8_t connected_component_count;
     uint8_t threshold;
     uint8_t contrast;
+    camera_ball_observation_t ball;
     uint32_t received_frames;
     uint32_t decoded_frames;
     uint32_t dropped_frames;

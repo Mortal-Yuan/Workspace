@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "app_config.h"
+#include "camera_ball_vision.h"
 #include "camera_line_vision.h"
 #include "driver/gpio.h"
 #include "kiwi_kinematics.h"
@@ -138,6 +139,118 @@ enum {
 
 static uint8_t s_test_image[TEST_IMAGE_WIDTH * TEST_IMAGE_HEIGHT * 3];
 static camera_line_vision_workspace_t s_camera_line_workspace;
+static uint8_t s_ball_image[CAMERA_BALL_VISION_MAX_PIXELS * 3];
+static camera_ball_vision_workspace_t s_camera_ball_workspace;
+
+static void fill_ball_image(uint8_t red, uint8_t green, uint8_t blue)
+{
+    for (size_t index = 0; index < CAMERA_BALL_VISION_MAX_PIXELS; ++index) {
+        s_ball_image[index * 3] = red;
+        s_ball_image[index * 3 + 1] = green;
+        s_ball_image[index * 3 + 2] = blue;
+    }
+}
+
+static void draw_ball_circle(int center_x, int center_y, int radius,
+                             uint8_t red, uint8_t green, uint8_t blue)
+{
+    for (int y = 0; y < CAMERA_BALL_VISION_MAX_HEIGHT; ++y) {
+        for (int x = 0; x < CAMERA_BALL_VISION_MAX_WIDTH; ++x) {
+            const int dx = x - center_x;
+            const int dy = y - center_y;
+            if (dx * dx + dy * dy > radius * radius) continue;
+            uint8_t *pixel = &s_ball_image[
+                (y * CAMERA_BALL_VISION_MAX_WIDTH + x) * 3];
+            pixel[0] = red;
+            pixel[1] = green;
+            pixel[2] = blue;
+        }
+    }
+}
+
+static camera_ball_observation_t analyze_ball_image(void)
+{
+    return camera_ball_analyze_rgb888(
+        s_ball_image, CAMERA_BALL_VISION_MAX_WIDTH,
+        CAMERA_BALL_VISION_MAX_HEIGHT, false, &APP_CONFIG.camera_ball,
+        &s_camera_ball_workspace);
+}
+
+static void test_camera_ball_vision(void)
+{
+    assert(APP_CONFIG.camera_ball.red_minimum == 45);
+    assert(APP_CONFIG.camera_ball.red_dominance == 8);
+    assert(APP_CONFIG.camera_ball.red_ratio_permille == 380);
+    assert(APP_CONFIG.camera_ball.minimum_mean_red_dominance == 40);
+    assert(APP_CONFIG.camera_ball.edge_margin_pixels == 2);
+    assert(APP_CONFIG.camera_ball.tracking_tolerance_permille == 200);
+    assert(APP_CONFIG.camera_ball.confirm_frames == 3);
+
+    fill_ball_image(120, 120, 120);
+    camera_ball_observation_t ball = analyze_ball_image();
+    assert(ball.valid && !ball.candidate);
+    assert(ball.probe_red_score == 0);
+
+    fill_ball_image(120, 120, 120);
+    draw_ball_circle(40, 30, 9, 185, 35, 25);
+    ball = analyze_ball_image();
+    assert(ball.valid && ball.candidate && !ball.detected);
+    assert(ball.color == BALL_COLOR_RED);
+    assert(ball.center_x_permille > -30 && ball.center_x_permille < 30);
+    assert(ball.center_y_permille > 450 && ball.center_y_permille < 550);
+    assert(ball.width_permille > 200 && ball.height_permille > 250);
+    assert(ball.fill_permille >= 690);
+    assert(ball.roundness_permille > 900);
+    assert(ball.mean_red == 185 && ball.mean_green == 35 &&
+           ball.mean_blue == 25);
+    assert(ball.probe_red_score == 310 && ball.probe_red == 185 &&
+           ball.probe_green == 35 && ball.probe_blue == 25);
+
+    fill_ball_image(120, 120, 120);
+    draw_ball_circle(18, 42, 7, 170, 35, 30);
+    ball = analyze_ball_image();
+    assert(ball.candidate && ball.center_x_permille < -400 &&
+           ball.center_y_permille > 600);
+
+    fill_ball_image(120, 120, 120);
+    draw_ball_circle(1, 30, 7, 170, 35, 30);
+    ball = analyze_ball_image();
+    assert(ball.color == BALL_COLOR_RED && !ball.candidate);
+
+    fill_ball_image(120, 120, 120);
+    draw_ball_circle(40, 30, 9, 25, 190, 30);
+    ball = analyze_ball_image();
+    assert(ball.valid && !ball.candidate);
+    fill_ball_image(120, 120, 120);
+    draw_ball_circle(40, 30, 9, 25, 45, 190);
+    ball = analyze_ball_image();
+    assert(ball.valid && !ball.candidate);
+
+    /* A round but weakly red background region must not outrank the ball. */
+    fill_ball_image(120, 120, 120);
+    draw_ball_circle(40, 30, 9, 98, 74, 47);
+    ball = analyze_ball_image();
+    assert(ball.valid && ball.color == BALL_COLOR_RED && !ball.candidate);
+
+    /* Red noise below the configured area and an elongated red object
+     * are both rejected as balls. */
+    fill_ball_image(120, 120, 120);
+    draw_ball_circle(40, 30, 2, 185, 35, 25);
+    ball = analyze_ball_image();
+    assert(!ball.candidate);
+    fill_ball_image(120, 120, 120);
+    for (int y = 28; y <= 31; ++y) {
+        for (int x = 15; x <= 64; ++x) {
+            uint8_t *pixel = &s_ball_image[
+                (y * CAMERA_BALL_VISION_MAX_WIDTH + x) * 3];
+            pixel[0] = 185;
+            pixel[1] = 35;
+            pixel[2] = 25;
+        }
+    }
+    ball = analyze_ball_image();
+    assert(!ball.candidate);
+}
 
 static void fill_test_image(uint8_t gray)
 {
@@ -185,9 +298,13 @@ static void test_camera_line_vision(void)
     assert(APP_CONFIG.camera_line.roi_left_permille == 250);
     assert(APP_CONFIG.camera_line.roi_right_permille == 750);
     assert(APP_CONFIG.camera_line.horizontal_scale_permille == 1000);
+    assert(APP_CONFIG.camera_line.maximum_black_gray == 120);
     assert(APP_CONFIG.camera_line.hairpin_near_threshold_permille == 160);
     assert(APP_CONFIG.camera_line.hairpin_heading_threshold_permille == 300);
     assert(APP_CONFIG.camera_line.hairpin_heading_gain_permille == 100);
+    assert(APP_CONFIG.camera_line.finish_width_permille == 800);
+    assert(APP_CONFIG.camera_line.finish_black_permille == 200);
+    assert(APP_CONFIG.camera_line.finish_confirm_frames == 2);
     /* The captured hairpin geometry must not cancel into an almost-straight
      * steering request. */
     assert(camera_line_steering_from_geometry(
@@ -196,6 +313,22 @@ static void test_camera_line_vision(void)
                -250, 160, &APP_CONFIG.camera_line) == -209);
     assert(camera_line_steering_from_geometry(
                250, 100, &APP_CONFIG.camera_line) == 175);
+    uint8_t finish_frames = 0;
+    assert(!camera_line_finish_confirmed(
+        true, APP_CONFIG.camera_line.finish_confirm_frames, &finish_frames));
+    assert(finish_frames == 1);
+    assert(camera_line_finish_confirmed(
+        true, APP_CONFIG.camera_line.finish_confirm_frames, &finish_frames));
+    assert(finish_frames == 2);
+    /* Disabling finish recognition during bypass clears a partial or complete
+     * candidate sequence.  Re-enabling after line recovery starts fresh. */
+    assert(!camera_line_finish_confirmed(
+        false, APP_CONFIG.camera_line.finish_confirm_frames, &finish_frames));
+    assert(finish_frames == 0);
+    assert(!camera_line_finish_confirmed(
+        true, APP_CONFIG.camera_line.finish_confirm_frames, &finish_frames));
+    assert(camera_line_finish_confirmed(
+        true, APP_CONFIG.camera_line.finish_confirm_frames, &finish_frames));
     assert(line_sensor_pattern(camera_line_virtual_sensors(-601, false)) ==
            0x08);
     assert(line_sensor_pattern(camera_line_virtual_sensors(-600, false)) ==
@@ -213,10 +346,29 @@ static void test_camera_line_vision(void)
     camera_line_analysis_t analysis = analyze_test_image();
     assert(analysis.valid && !analysis.line_detected);
 
+    /* A coherent grey shadow used to become Otsu's dark class.  The absolute
+     * black ceiling rejects it even though scene contrast remains valid. */
+    fill_test_image(225);
+    draw_view_rectangle(74, 72, 85, 110, 130);
+    analysis = analyze_test_image();
+    assert(analysis.valid && analysis.contrast >= 30);
+    assert(analysis.threshold == 120);
+    assert(!analysis.line_detected);
+
+    /* Genuinely dark tape remains below both the adaptive and absolute gates. */
+    fill_test_image(225);
+    draw_view_rectangle(74, 72, 85, 110, 90);
+    analysis = analyze_test_image();
+    assert(analysis.valid && analysis.line_detected);
+    assert(analysis.threshold < APP_CONFIG.camera_line.maximum_black_gray);
+
     fill_test_image(225);
     draw_view_rectangle(74, 72, 85, 110, 25);
     analysis = analyze_test_image();
     assert(analysis.valid && analysis.line_detected);
+    /* Black classification is intentionally tighter than the retired
+     * Otsu + contrast / 8 rule: 25/225 now yields 25 + 200/16 = 37. */
+    assert(analysis.threshold == 37);
     assert(!analysis.finish_detected);
     assert(line_sensor_pattern(analysis.virtual_sensors) == 0x06);
     assert(analysis.center_permille == 0);
@@ -254,6 +406,26 @@ static void test_camera_line_vision(void)
     analysis = analyze_test_image();
     assert(analysis.line_detected && analysis.finish_detected);
     assert(line_sensor_pattern(analysis.virtual_sensors) == 0x0f);
+
+    /* The real endpoint is a thin T: a normal vertical stem connected to a
+     * near-full-width horizontal strip.  Its area is deliberately below the
+     * retired 350-permille broad-patch gate. */
+    fill_test_image(225);
+    draw_view_rectangle(74, 72, 85, 105, 25);
+    draw_view_rectangle(40, 99, 119, 105, 25);
+    analysis = analyze_test_image();
+    assert(analysis.line_detected && analysis.finish_detected);
+    assert(analysis.width_permille == 1000);
+    assert(analysis.component_area_permille >= 200 &&
+           analysis.component_area_permille < 350);
+
+    /* A one-row horizontal artifact connected to the line is too small to
+     * qualify even though its instantaneous width spans the ROI. */
+    fill_test_image(225);
+    draw_view_rectangle(74, 72, 85, 110, 25);
+    draw_view_rectangle(40, 90, 119, 90, 25);
+    analysis = analyze_test_image();
+    assert(analysis.line_detected && !analysis.finish_detected);
 
     /* Dark objects outside the central track window must not beat the line. */
     fill_test_image(225);
@@ -411,11 +583,11 @@ static void test_kiwi_kinematics(void)
 
     command = kiwi_inverse_kinematics(
         (body_motion_command_t) {.left = 380}, &APP_CONFIG.kinematics);
-    assert(APP_CONFIG.kinematics.lateral_yaw_compensation_permille == 500);
-    assert(command.a == -300 && command.b == -570 && command.c == 300);
+    assert(APP_CONFIG.kinematics.lateral_yaw_compensation_permille == 550);
+    assert(command.a == -300 && command.b == -589 && command.c == 300);
     command = kiwi_inverse_kinematics(
         (body_motion_command_t) {.left = 500}, &APP_CONFIG.kinematics);
-    assert(command.a == -300 && command.b == -750 && command.c == 300);
+    assert(command.a == -300 && command.b == -775 && command.c == 300);
     command = kiwi_inverse_kinematics(
         (body_motion_command_t) {.left = -380}, &APP_CONFIG.kinematics);
     assert(APP_CONFIG.kinematics.right_lateral_yaw_compensation_permille ==
@@ -712,15 +884,16 @@ static void test_line_follow_behavior(void)
 static void test_obstacle_supervisor(void)
 {
     obstacle_config_t config = APP_CONFIG.obstacle;
-    assert(config.stop_mm == 100);
+    assert(config.stop_mm == 60);
     assert(config.no_echo_limit == 3);
     assert(APP_CONFIG.ultrasonic.timeout_us == 45000);
     assert(APP_CONFIG.ultrasonic.period_ms == 70);
     assert(config.lateral_speed == 380);
     assert(config.lateral_start_speed == 500);
-    assert(config.left_strafe_ms == 1231);
+    assert(config.left_strafe_ms == 1170);
     assert(config.forward_drive_ms == 1191);
     assert(config.right_strafe_ms == 960);
+    assert(config.post_bypass_forward_ms == 1000);
     config.bypass_enabled = false;
     obstacle_supervisor_t supervisor;
     obstacle_supervisor_init(&supervisor, &config);
@@ -755,7 +928,7 @@ static void test_obstacle_supervisor(void)
     assert(decision.policy == MOTION_POLICY_LINE_FOLLOW);
     assert(decision.transition == OBSTACLE_TRANSITION_TO_CLEAR);
 
-    event = ultrasonic(7, true, 101, 101, ULTRASONIC_QUALITY_VALID,
+    event = ultrasonic(7, true, 61, 61, ULTRASONIC_QUALITY_VALID,
                        false, false);
     decision = obstacle_step(&supervisor, &event);
     assert(decision.policy == MOTION_POLICY_LINE_FOLLOW);
@@ -784,7 +957,7 @@ static void test_obstacle_supervisor(void)
     assert(supervisor.state == OBSTACLE_STATE_CLEAR);
 
     /* A near raw Echo still stops immediately, even if it is an outlier. */
-    event = ultrasonic(12, true, 100, 300, ULTRASONIC_QUALITY_OUTLIER,
+    event = ultrasonic(12, true, 60, 300, ULTRASONIC_QUALITY_OUTLIER,
                        false, false);
     decision = obstacle_step(&supervisor, &event);
     assert(decision.policy == MOTION_POLICY_BLOCK);
@@ -842,7 +1015,7 @@ static void test_automatic_bypass_sequence(void)
     assert(supervisor.state == OBSTACLE_STATE_CLEAR);
     assert(decision.policy == MOTION_POLICY_LINE_FOLLOW);
 
-    event = ultrasonic(4, true, 100, 300,
+    event = ultrasonic(4, true, 60, 300,
                        ULTRASONIC_QUALITY_OUTLIER, false, false);
     decision = obstacle_step_at(&supervisor, &event, white, 200000);
     assert(supervisor.state == OBSTACLE_STATE_BRAKE);
@@ -852,6 +1025,8 @@ static void test_automatic_bypass_sequence(void)
     decision = obstacle_step_at(&supervisor, NULL, white,
                                 200000 + config.brake_ms * 1000LL);
     assert(supervisor.state == OBSTACLE_STATE_STRAFE_LEFT_DISTANCE);
+    assert(decision.transition ==
+           OBSTACLE_TRANSITION_TO_STRAFE_LEFT_DISTANCE);
     assert(decision.policy == MOTION_POLICY_OVERRIDE);
     assert(decision.override_motion.left == config.lateral_start_speed);
 
@@ -914,17 +1089,26 @@ static void test_automatic_bypass_sequence(void)
         now_us += 20000;
         decision = obstacle_step_at(&supervisor, NULL, black, now_us);
     }
-    assert(supervisor.state == OBSTACLE_STATE_CLEAR);
+    assert(supervisor.state == OBSTACLE_STATE_POST_BYPASS_FORWARD);
     assert(decision.policy == MOTION_POLICY_LINE_FOLLOW);
     assert(decision.line_action == LINE_ACTION_RESUME);
     assert(supervisor.bypass_completed);
 
-    /* After avoidance, 1111 is a latched finish-line stop. */
-    now_us += 20000;
+    /* Camera finish shapes are ignored.  After line reacquisition the car
+     * continues with normal camera steering for exactly 1000 ms. */
+    const int64_t post_forward_started_us = supervisor.phase_started_us;
+    now_us = post_forward_started_us +
+        config.post_bypass_forward_ms * 1000LL - 1;
     decision = obstacle_step_at(&supervisor, NULL, all_black, now_us);
+    assert(supervisor.state == OBSTACLE_STATE_POST_BYPASS_FORWARD);
+    assert(decision.policy == MOTION_POLICY_LINE_FOLLOW);
+    assert(decision.transition == OBSTACLE_TRANSITION_NONE);
+
+    now_us++;
+    decision = obstacle_step_at(&supervisor, NULL, black, now_us);
     assert(supervisor.state == OBSTACLE_STATE_FINISHED);
     assert(decision.transition == OBSTACLE_TRANSITION_TO_FINISHED);
-    assert(decision.reason == OBSTACLE_REASON_FINISH_LINE);
+    assert(decision.reason == OBSTACLE_REASON_POST_BYPASS_COMPLETE);
     assert(decision.policy == MOTION_POLICY_BLOCK);
     assert(decision.line_action == LINE_ACTION_SUSPEND);
     now_us += 20000;
@@ -1116,6 +1300,7 @@ int main(void)
     assert(!app_config_validate(&invalid));
     test_kiwi_kinematics();
     test_camera_line_vision();
+    test_camera_ball_vision();
     test_line_follow_behavior();
     test_obstacle_supervisor();
     test_automatic_bypass_sequence();

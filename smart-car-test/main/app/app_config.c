@@ -13,7 +13,8 @@ const app_config_t APP_CONFIG = {
     .kinematics = {
         .lateral_side_permille = 866,
         /* Left compensation raised to match the independently tuned right. */
-        .lateral_yaw_compensation_permille = 500,
+        /* Slight residual counter-clockwise drift remained at 50%. */
+        .lateral_yaw_compensation_permille = 550,
         /* Right strafe still rotated clockwise severely at 30%. */
         .right_lateral_yaw_compensation_permille = 500,
         /* A/C stalled at 226 during the 20% compensation trial. */
@@ -64,17 +65,38 @@ const app_config_t APP_CONFIG = {
         /* 2026-08-31 geometric-center recalibration: +202 -> 0. */
         .center_offset_permille = -165,
         .minimum_contrast = 30,
+        /* Shadows may be relatively dark but are not black tape.  Apply this
+         * absolute ceiling after the adaptive Otsu calculation. */
+        .maximum_black_gray = 120,
         .heading_gain_permille = 500,
         /* Avoid near/far cancellation when a connected line crosses the view
          * in a sharp hairpin. */
         .hairpin_near_threshold_permille = 160,
         .hairpin_heading_threshold_permille = 300,
         .hairpin_heading_gain_permille = 100,
-        .finish_width_permille = 700,
-        .finish_black_permille = 350,
-        .finish_arm_frames = 3,
+        /* T finish: demand a near-full-width crossbar, but permit a thinner
+         * strip than the retired broad-black-patch area gate. */
+        .finish_width_permille = 800,
+        .finish_black_permille = 200,
+        .history_arm_frames = 3,
+        .finish_confirm_frames = 2,
         /* Three to four missing 15 fps frames stop autonomous motion. */
         .fresh_ms = 350,
+    },
+    .camera_ball = {
+        /* Initial red-ball thresholds; field telemetry exposes mean RGB. */
+        .red_minimum = 45,
+        .red_dominance = 8,
+        .red_ratio_permille = 380,
+        /* Reject the weak red background while retaining dim ball edges. */
+        .minimum_mean_red_dominance = 40,
+        /* At 80x60 this starts at roughly 24 connected red pixels. */
+        .minimum_area_permille = 5,
+        .minimum_fill_permille = 350,
+        .minimum_roundness_permille = 600,
+        .edge_margin_pixels = 2,
+        .tracking_tolerance_permille = 200,
+        .confirm_frames = 3,
     },
     .ultrasonic = {
         /* Allow the module's completed long no-return pulse to be observed. */
@@ -89,7 +111,8 @@ const app_config_t APP_CONFIG = {
     .obstacle = {
         /* Enabled for the first ground-level distance calibration. */
         .bypass_enabled = true,
-        .stop_mm = 100,
+        /* Field retune: approach closer before starting the bypass. */
+        .stop_mm = 60,
         .clear_confirm_count = 3,
         .line_confirm_count = 5,
         /* Retained for diagnostics; open-space no-Echo does not stop CLEAR. */
@@ -100,14 +123,18 @@ const app_config_t APP_CONFIG = {
         .lateral_speed = 380,
         .lateral_start_speed = 500,
         .motion_boost_ms = 150,
-        /* Reduce the last 1296 ms left segment by another 5%. */
-        .left_strafe_ms = 1231,
+        /* The 1231 ms field result still travelled slightly too far. */
+        .left_strafe_ms = 1170,
         .forward_speed = 400,
         .forward_start_speed = 500,
-        /* Stop 40 mm earlier at 100 mm, then recover that distance forward. */
+        /* Keep the longer segment after restoring the 60 mm trigger so the
+         * car clears roughly 40 mm farther beyond the obstacle. */
         .forward_drive_ms = 1191,
         /* Increase the last 800 ms right segment by 20%. */
         .right_strafe_ms = 960,
+        /* After the right strafe has reacquired and confirmed the line, use
+         * normal camera steering for another second, then finish. */
+        .post_bypass_forward_ms = 1000,
     },
     .button = {
         .press_debounce_ms = 50,
@@ -126,10 +153,10 @@ bool app_config_validate(const app_config_t *config)
         config->control_period_ms > 0 &&
         config->kinematics.lateral_side_permille > 0 &&
         config->kinematics.lateral_side_permille <= 1000 &&
-        config->kinematics.lateral_yaw_compensation_permille >= -500 &&
-        config->kinematics.lateral_yaw_compensation_permille <= 500 &&
-        config->kinematics.right_lateral_yaw_compensation_permille >= -500 &&
-        config->kinematics.right_lateral_yaw_compensation_permille <= 500 &&
+        config->kinematics.lateral_yaw_compensation_permille >= -1000 &&
+        config->kinematics.lateral_yaw_compensation_permille <= 1000 &&
+        config->kinematics.right_lateral_yaw_compensation_permille >= -1000 &&
+        config->kinematics.right_lateral_yaw_compensation_permille <= 1000 &&
         valid_command(config->kinematics.lateral_side_wheel_minimum) &&
         valid_command(config->kinematics.motor_b_positive_minimum) &&
         config->telemetry_period_ms > 0 &&
@@ -167,6 +194,8 @@ bool app_config_validate(const app_config_t *config)
             config->obstacle.forward_speed &&
         config->obstacle.forward_drive_ms > 0 &&
         config->obstacle.right_strafe_ms > 0 &&
+        config->obstacle.post_bypass_forward_ms > 0 &&
+        config->obstacle.post_bypass_forward_ms <= 5000 &&
         valid_command(config->line.straight_speed) &&
         valid_command(config->line.curve_speed) &&
         valid_command(config->line.curve_max) &&
@@ -226,6 +255,8 @@ bool app_config_validate(const app_config_t *config)
         config->camera_line.center_offset_permille <= 500 &&
         config->camera_line.minimum_contrast >= 10 &&
         config->camera_line.minimum_contrast <= 255 &&
+        config->camera_line.maximum_black_gray > 0 &&
+        config->camera_line.maximum_black_gray <= 255 &&
         config->camera_line.heading_gain_permille >= 0 &&
         config->camera_line.heading_gain_permille <= 2000 &&
         config->camera_line.hairpin_near_threshold_permille >= 0 &&
@@ -239,9 +270,31 @@ bool app_config_validate(const app_config_t *config)
         config->camera_line.finish_width_permille <= 1000 &&
         config->camera_line.finish_black_permille > 0 &&
         config->camera_line.finish_black_permille <= 1000 &&
-        config->camera_line.finish_arm_frames > 0 &&
-        config->camera_line.finish_arm_frames <= 20 &&
+        config->camera_line.history_arm_frames > 0 &&
+        config->camera_line.history_arm_frames <= 20 &&
+        config->camera_line.finish_confirm_frames > 0 &&
+        config->camera_line.finish_confirm_frames <= 20 &&
         config->camera_line.fresh_ms >= 100 &&
+        config->camera_ball.red_minimum >= 0 &&
+        config->camera_ball.red_minimum <= 255 &&
+        config->camera_ball.red_dominance > 0 &&
+        config->camera_ball.red_dominance <= 255 &&
+        config->camera_ball.red_ratio_permille > 333 &&
+        config->camera_ball.red_ratio_permille <= 1000 &&
+        config->camera_ball.minimum_mean_red_dominance > 0 &&
+        config->camera_ball.minimum_mean_red_dominance <= 255 &&
+        config->camera_ball.minimum_area_permille > 0 &&
+        config->camera_ball.minimum_area_permille <= 500 &&
+        config->camera_ball.minimum_fill_permille > 0 &&
+        config->camera_ball.minimum_fill_permille <= 1000 &&
+        config->camera_ball.minimum_roundness_permille > 0 &&
+        config->camera_ball.minimum_roundness_permille <= 1000 &&
+        config->camera_ball.edge_margin_pixels >= 0 &&
+        config->camera_ball.edge_margin_pixels <= 10 &&
+        config->camera_ball.tracking_tolerance_permille > 0 &&
+        config->camera_ball.tracking_tolerance_permille <= 1000 &&
+        config->camera_ball.confirm_frames > 0 &&
+        config->camera_ball.confirm_frames <= 20 &&
         config->button.press_debounce_ms > 0 &&
         config->button.release_rearm_ms > 0 &&
         config->button.startup_guard_ms >= 0 &&

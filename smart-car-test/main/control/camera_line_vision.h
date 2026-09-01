@@ -44,6 +44,8 @@ line_sensor_sample_t camera_line_virtual_sensors(int center_permille,
 int camera_line_steering_from_geometry(
     int near_center_permille, int far_center_permille,
     const camera_line_config_t *config);
+bool camera_line_finish_confirmed(bool candidate, int required_frames,
+                                  uint8_t *candidate_frames);
 camera_line_analysis_t camera_line_analyze_rgb888(
     const uint8_t *pixels, size_t width, size_t height,
     bool rotate_180, const camera_line_config_t *config,

@@ -15,11 +15,6 @@ static bool line_detected(line_sensor_sample_t line)
     return line.left || line.left_center || line.right_center || line.right;
 }
 
-static bool finish_line_detected(line_sensor_sample_t line)
-{
-    return line_sensor_pattern(line) == 0x0f;
-}
-
 static obstacle_transition_t transition_for(obstacle_state_t state)
 {
     switch (state) {
@@ -43,6 +38,8 @@ static obstacle_transition_t transition_for(obstacle_state_t state)
         return OBSTACLE_TRANSITION_TO_STRAFE_RIGHT_DISTANCE;
     case OBSTACLE_STATE_LINE_CONFIRM:
         return OBSTACLE_TRANSITION_TO_LINE_CONFIRM;
+    case OBSTACLE_STATE_POST_BYPASS_FORWARD:
+        return OBSTACLE_TRANSITION_TO_POST_BYPASS_FORWARD;
     case OBSTACLE_STATE_FINISHED:
         return OBSTACLE_TRANSITION_TO_FINISHED;
     case OBSTACLE_STATE_FAILSAFE:
@@ -135,6 +132,7 @@ static void apply_policy(const obstacle_supervisor_t *supervisor,
     int speed;
     switch (supervisor->state) {
     case OBSTACLE_STATE_CLEAR:
+    case OBSTACLE_STATE_POST_BYPASS_FORWARD:
         decision->policy = MOTION_POLICY_LINE_FOLLOW;
         break;
     case OBSTACLE_STATE_STRAFE_LEFT_DISTANCE:
@@ -233,11 +231,7 @@ obstacle_decision_t obstacle_supervisor_step(
         break;
 
     case OBSTACLE_STATE_CLEAR:
-        if (supervisor->bypass_completed && finish_line_detected(line)) {
-            enter_state(supervisor, &decision, OBSTACLE_STATE_FINISHED,
-                        OBSTACLE_REASON_FINISH_LINE, now_us);
-            decision.line_action = LINE_ACTION_SUSPEND;
-        } else if (observation == OBSERVATION_NEAR) {
+        if (observation == OBSERVATION_NEAR) {
             enter_state(supervisor, &decision,
                         supervisor->config.bypass_enabled ?
                             OBSTACLE_STATE_BRAKE :
@@ -347,17 +341,24 @@ obstacle_decision_t obstacle_supervisor_step(
             if (supervisor->clear_count >=
                 (uint8_t)supervisor->config.line_confirm_count) {
                 supervisor->bypass_completed = true;
-                if (finish_line_detected(line)) {
-                    enter_state(supervisor, &decision,
-                                OBSTACLE_STATE_FINISHED,
-                                OBSTACLE_REASON_FINISH_LINE, now_us);
-                    decision.line_action = LINE_ACTION_SUSPEND;
-                } else {
-                    enter_state(supervisor, &decision, OBSTACLE_STATE_CLEAR,
-                                OBSTACLE_REASON_LINE_CONFIRMED, now_us);
-                    decision.line_action = LINE_ACTION_RESUME;
-                }
+                enter_state(supervisor, &decision,
+                            OBSTACLE_STATE_POST_BYPASS_FORWARD,
+                            OBSTACLE_REASON_LINE_CONFIRMED, now_us);
+                decision.line_action = LINE_ACTION_RESUME;
             }
+        }
+        break;
+
+    case OBSTACLE_STATE_POST_BYPASS_FORWARD:
+        if (observation == OBSERVATION_NEAR) {
+            enter_state(supervisor, &decision, OBSTACLE_STATE_FAILSAFE,
+                        OBSTACLE_REASON_NEAR, now_us);
+            decision.line_action = LINE_ACTION_SUSPEND;
+        } else if (elapsed_us >=
+                   supervisor->config.post_bypass_forward_ms * 1000LL) {
+            enter_state(supervisor, &decision, OBSTACLE_STATE_FINISHED,
+                        OBSTACLE_REASON_POST_BYPASS_COMPLETE, now_us);
+            decision.line_action = LINE_ACTION_SUSPEND;
         }
         break;
 
@@ -379,12 +380,13 @@ const char *obstacle_state_name(obstacle_state_t state)
     case OBSTACLE_STATE_CLEAR: return "CLEAR";
     case OBSTACLE_STATE_WAIT_CLEAR: return "WAIT_CLEAR";
     case OBSTACLE_STATE_BRAKE: return "BRAKE";
-    case OBSTACLE_STATE_STRAFE_LEFT_DISTANCE: return "LEFT_15CM";
+    case OBSTACLE_STATE_STRAFE_LEFT_DISTANCE: return "LEFT_STRAFE";
     case OBSTACLE_STATE_SETTLE_FORWARD: return "SETTLE_FORWARD";
     case OBSTACLE_STATE_FORWARD_DISTANCE: return "FORWARD_19CM";
     case OBSTACLE_STATE_SETTLE_RIGHT: return "SETTLE_RIGHT";
     case OBSTACLE_STATE_STRAFE_RIGHT_DISTANCE: return "RIGHT_12CM";
     case OBSTACLE_STATE_LINE_CONFIRM: return "LINE_CONFIRM";
+    case OBSTACLE_STATE_POST_BYPASS_FORWARD: return "POST_FORWARD_1S";
     case OBSTACLE_STATE_FINISHED: return "FINISHED";
     case OBSTACLE_STATE_FAILSAFE: return "FAILSAFE";
     default: return "UNKNOWN";

@@ -11,7 +11,7 @@ This file is the handoff summary for agents working in `smart-car-test`.
   camera, then calibrating camera line following and ultrasonic obstacle bypass.
 - Course direction from the lecture: line following and obstacle avoidance first, with camera/ball interaction and optional extensions in later phases.
 
-The detailed, experimentally confirmed motor and infrared mapping is in [电机与红外测试记录.md](电机与红外测试记录.md). The complete development history, wiring summary, algorithm experiments, failures, and latest physical-test conclusions are in [项目开发与实验日志.md](项目开发与实验日志.md). Treat those documents and the current source as authoritative when older notes disagree.
+The detailed, experimentally confirmed motor and infrared mapping is in [电机与红外测试记录.md](电机与红外测试记录.md). The complete development history, wiring summary, algorithm experiments, failures, and latest physical-test conclusions are in [项目开发与实验日志.md](项目开发与实验日志.md). The final 2026-09-01 camera, obstacle, finish, ball, wiring, and flashed-artifact handoff is in [2026-09-01_摄像头巡线避障与红球识别综合开发总结.md](2026-09-01_摄像头巡线避障与红球识别综合开发总结.md). Treat those documents and the current source as authoritative when older notes disagree.
 
 ## Local Reference Material
 
@@ -60,7 +60,7 @@ The supplied VS Code archive contains an ESP-IDF LED blink project, and the Ardu
   MJPEG 640x480 @ 15 fps profile. The camera was physically remounted upright
   on 2026-08-28, so preview and vision now use the native image orientation.
 - HC-SR04 is assigned `Trig=GPIO6`, `Echo=GPIO13`. Non-blocking GPIO-edge timing feeds obstacle avoidance while line following. Ranging accuracy and the physical Echo level interface have not yet been formally validated.
-- The current uncommitted UART0 diagnostic uses `TX=GPIO43` and `RX=GPIO44`
+- The current UART0 diagnostic uses `TX=GPIO43` and `RX=GPIO44`
   at 115200 bit/s, so those pins are not available for MPU6500 I2C.
 
 Important allocation changes from early notes:
@@ -147,8 +147,11 @@ dependency and extension contracts.
   The active native-view ROI uses the central horizontal span
   `x=25%..75%` while retaining `y=60%..93%`. Horizontal coordinates, component
   width, and component area use the calibrated 1x logical scale. The dark
-  histogram percentile is 2% for the restored central-width background. An adaptive
-  threshold is followed by true 8-neighbour two-dimensional connected-component
+  histogram percentile is 2% for the restored central-width background. The
+  adaptive black threshold uses `min(Otsu + contrast/16, 120)` (tightened from
+  `Otsu + contrast/8` on 2026-09-01). The absolute 120/255 ceiling prevents a
+  relatively dark grey shadow from becoming black merely because it forms
+  Otsu's darker class. This is followed by true 8-neighbour two-dimensional connected-component
   labeling. Every non-empty connected component is eligible. Without a stable
   line history, the component with the largest pixel area is selected. After
   three consecutive ordinary-line frames, the last reliable near position and
@@ -174,10 +177,12 @@ dependency and extension contracts.
   correction at +/-600 permille; virtual `L/LC/RC/R` remains available for
   pattern state, direction validation, obstacle recovery, and diagnostics.
 - Position and steering history participate only in soft candidate ranking,
-  never in candidate acceptance. A wide finish candidate is armed only after
-  three accepted normal-line frames; before arming,
-  the same connected shape remains usable as an ordinary line instead of being
-  rejected. Vision scratch buffers live in one
+  never in candidate acceptance. The implemented T-finish classifier requires a
+  connected component at least 800 permille wide and 200 permille in area, but
+  its runtime gate is currently kept disabled. T-like shapes therefore remain
+  ordinary connected lines and cannot finish autonomy. Three accepted
+  normal-line frames separately arm only the soft history ranking.
+  Vision scratch buffers live in one
   PSRAM workspace allocated at camera initialization, not on the decode-task
   stack and not per frame.
 - Line following actively steers with A/C differential correction and searches
@@ -192,6 +197,23 @@ dependency and extension contracts.
   count/height/area (`comp=count/height/area`), black fraction, threshold,
   contrast, drops, errors, ultrasonic distance, and A/B/C encoder counts. In the virtual pattern, `1` means the
   corresponding camera-derived lane region sees black.
+- The same decoded 80x60 RGB888 frame now also feeds a read-only red-ball
+  detector in `main/control/camera_ball_vision.c`. It does not influence any
+  motor policy. The initial red gates are R>=45, R at least 8 above max(G,B),
+  and R/RGB>=380 permille. Eight-connected blobs then need mean R at least 40
+  above mean max(G,B), plus at least
+  5 permille frame area, 350 permille bounding-box fill, 600 permille
+  short/long-side roundness, and a two-pixel image-edge margin. Three frames
+  within 200 permille position tolerance confirm a detection. UART `BALL`
+  reports color/candidate/detected/stable-count plus position, dimensions,
+  shape, confidence, mean RGB, and a raw red probe. The real red ball present
+  during the 2026-09-01 first test confirmed continuously near x=-81..-84,
+  y=714..717, with mean RGB about 160/97/90 and the raw red probe about
+  210/93/80. The final filtered build confirmed the ball near x=+41..+43,
+  y=716..717 without jumping to the weak red background; after removal, a
+  12-second sample remained `BALL=2/0/0/0`. Ball data is still read-only and
+  must not affect motion until a separately reviewed push-ball state machine
+  is added.
 - Camera vision analyzes the native view's central near-track window
   (`x=25%..75%`, `y=60%..93%`). Pixels outside that horizontal window are not
   included in the histogram, connected components, or line tracking. The
@@ -211,33 +233,39 @@ dependency and extension contracts.
   completed pulse above 4000 mm is reported as `NO_RETURN` (`q=5`). Completed
   no-return pulses, low-Echo timeouts, and clean far-distance `OUTLIER` jumps
   are treated as normal open space both during startup authorization and after
-  entering `CLEAR`. In active line following, the 20--100 mm raw-distance
+  entering `CLEAR`. In active line following, the 20--60 mm raw-distance
   test is the only ultrasonic condition allowed to interrupt `CLEAR`; even an
   Echo-high or malformed-edge diagnostic does not alter the line policy.
   Automatic bypass
   is enabled for bounded field calibration. The first raw Echo from 20 through
-  100 mm stops immediately, then the active sequence is `BRAKE -> LEFT_15CM ->
-  SETTLE_FORWARD -> FORWARD_19CM -> SETTLE_RIGHT -> RIGHT_12CM ->
-  LINE_CONFIRM`. Because encoder interference is not yet filtered, these are
-  scaled open-loop time segments: left 1231 ms, forward 1191 ms, and right
-  960 ms. Left is another 5% shorter than its preceding 1296 ms setting. Both
+  60 mm stops immediately, then the active sequence is `BRAKE -> LEFT_STRAFE
+  -> SETTLE_FORWARD -> FORWARD_19CM -> SETTLE_RIGHT -> RIGHT_12CM ->
+  LINE_CONFIRM`. The experimental camera-heading alignment state and all its
+  configuration were removed after the live 2026-09-01 test turned once and
+  ended in latched `FAILSAFE`. `BRAKE` now transitions directly to left strafe
+  after 150 ms. Because encoder interference is not yet filtered, the distance segments
+  are scaled open-loop times: left 1170 ms, forward 1191 ms, and right 960 ms.
+  Left is about 5% shorter than its preceding 1231 ms setting. Both
   lateral steady/start body commands are restored to 380/500; forward remains
-  at 400/500 commands and 1191 ms. The forward segment was lengthened by the
-  nominal 40 mm made necessary when the stop threshold moved from 60 to 100 mm.
-  All segments still require ruler calibration.
+  at 400/500 commands and 1191 ms. The trigger has now returned from 100 to
+  60 mm, but the longer forward segment is intentionally retained so the car
+  clears about 40 mm farther beyond the obstacle. All segments still require
+  ruler calibration.
   The right segment is a 960 ms maximum: its first black sample writes zero in
   the same 20 ms control cycle, then five stationary confirmation cycles precede
-  line-follow resume. No line by the deadline or loss during confirmation stops
-  the open-loop strafe and resumes the alternating line search instead of
-  entering `FAILSAFE`. Near-obstacle and repeated ultrasonic uncertainty faults
-  remain fail-safe stops. Before a bypass completes, `1111` remains an ordinary
-  line pattern; afterward it enters a separate latched `FINISHED` stop state.
+  line-follow resume. Once confirmed, the car uses normal camera steering for
+  exactly 1000 ms and then enters the latched `FINISHED` stop state. No line by
+  the deadline or loss during confirmation stops the open-loop strafe and
+  resumes the alternating line search instead of entering `FAILSAFE`.
+  Near-obstacle and repeated ultrasonic uncertainty faults remain fail-safe
+  stops. `1111` is always treated as an ordinary line pattern and no longer
+  triggers finish.
 - Ultrasonic authorization requires three consecutive obstacle-free
   observations; either a valid far Echo or clean low-Echo no-return/timeout
   counts, matching the mostly open competition course. Echo-high, malformed,
   or electrically uncertain samples never authorize startup. After entering
   normal `CLEAR` line following,
-  every ultrasonic result other than a raw Echo from 20 through 100 mm is
+  every ultrasonic result other than a raw Echo from 20 through 60 mm is
   diagnostic-only and cannot stop or modify line following. Fixed-distance
   bypass segments do not interpret no-Echo as an obstacle-edge completion
   signal; repeated uncertainty during an already active bypass may still enter
@@ -254,10 +282,11 @@ dependency and extension contracts.
   inverse-kinematics module now derives candidate left strafe as
   `A=-0.866S, B=-S, C=+0.866S` before empirical dead-zone and yaw correction.
   B positive has a 460 minimum and pure lateral A/C have a 300 minimum. Yaw
-  compensation remains direction-specific but both sides are currently 50%.
+  compensation remains direction-specific: left is currently 55% clockwise to
+  remove slight counter-clockwise drift, while right remains 50%.
   At the 380 steady lateral command this produces
-  `A/B/C=-300/-570/+300` left and `+300/+570/-300` right; the 500 start
-  command produces `-300/-750/+300` and `+300/+750/-300`. Automatic bypass is enabled for bounded field
+  `A/B/C=-300/-589/+300` left and `+300/+570/-300` right; the 500 start
+  command produces `-300/-775/+300` and `+300/+750/-300`. Automatic bypass is enabled for bounded field
   calibration after `q/e` confirmed physical direction. `q/e` run for 1000 ms; `g` runs the verified
   forward basis at 400/1000 for 1000 ms for ruler calibration.
 
@@ -316,6 +345,128 @@ These fallback flash parameters match the connected WROOM-2 board verified by
 the target or sdkconfig; forcing the former 2 MB value makes the 4 MB factory
 partition invalid and causes a boot loop.
 
+On 2026-09-01 the first device enumerated as `Silabser0` CP210x `COM3` was an
+unrelated ESP32-S2, so the S3 image was rejected before any write. The car was
+then reconnected on the same port and positively identified as ESP32-S3 rev0.2,
+16 MB PSRAM, MAC `9c:cc:01:fb:8f:9c`. The final -383 calibration image was
+written with ROM `no-stub` at 115200 baud and all three Flash hashes verified.
+The no-command check remained `IDLE`, A/B/C=0, encoders 0/0/0, camera fresh,
+and no decode errors. Continue to verify chip identity rather than trusting the
+COM number alone.
+
+After the slower per-frame alignment image was flashed on 2026-09-01, the
+no-command state again remained `IDLE` with A/B/C=0, a valid 234--237 mm
+ultrasonic result, and fresh camera frames. However, after an explicit encoder
+clear, all three counts advanced by tens of thousands per 500 ms while the
+motor command stayed zero. This is electrically impossible as real wheel
+motion and confirms that the unpulled, unfiltered encoder inputs are currently
+noisy; do not use these counts for motion control until that input problem is
+fixed. The image size is 0x59360 bytes and its SHA-256 is
+`C2B5A784DB030274AD1ECE5C45C5890917771315D7F2976F5B46C52311319724`.
+
+The subsequent 100 ms non-overlapping alignment-pulse image was flashed to the
+same verified S3 on 2026-09-01. Host tests, the ESP-IDF build, and all three
+flash hashes passed. Its no-command check stayed `IDLE`, A/B/C=0, encoders
+0/0/0, camera fresh with zero decode errors, and ultrasonic quality `VALID`.
+The image is 0x59440 bytes with SHA-256
+`5669A177357A433BE1012EB1AB68AD09154501A019483D70081326A66157656A`.
+
+The next field-requested image changes only the bounded alignment pulse from
+100 ms to 30 ms. It passed host tests, the ESP-IDF build, chip verification,
+flash hash checks, and a no-command check (`IDLE`, A/B/C=0, encoders 0/0/0,
+camera fresh/error-free, ultrasonic `VALID`). Its size remains 0x59440 bytes;
+SHA-256 is
+`54A0DF521FD8D153F9E9CB418B7EC0A8359930FDCFA819FD93BA71113AF016BB`.
+
+The live 30 ms test then made one alignment turn and ended in latched
+`FAILSAFE` (`obstacle=12`, zero motor command). At the user's request, the
+active 2026-09-01 image fully removes the alignment state, transitions,
+configuration, runtime fields, camera-snapshot interface, and host-test helper.
+After the 150 ms brake it enters left strafe directly. Host tests and the full
+ESP-IDF build pass. The verified ESP32-S3 rev0.2 at MAC
+`9c:cc:01:fb:8f:9c` accepted all three images with valid Flash hashes. The
+final application is 0x59150 bytes with SHA-256
+`0DB9BE4A7E5116F6638AFCCAD729751CDB45E44297A5053D649E4C5E454009A9`.
+Its no-command check stayed `IDLE`, `obstacle=0`, A/B/C=0, encoders 0/0/0,
+camera fresh/error-free, and ultrasonic `VALID` at about 329--337 mm. A
+separate unexpected `POWERON` reset observed during live wiring still needs
+power and connection investigation; do not attribute it to the removed state.
+
+The subsequent 2026-09-01 line-vision image tightens adaptive black
+classification from `Otsu + contrast/8` to `Otsu + contrast/16`; the 25/225
+host fixture therefore lowers its threshold from 50 to 37. Host regression and
+the full ESP-IDF build passed. The verified ESP32-S3 rev0.2 at MAC
+`9c:cc:01:fb:8f:9c` accepted the bootloader, partition table, and application
+with valid Flash hashes. The eight-second no-command check remained `IDLE`,
+`cmd=0,0,0`, camera fresh with zero decode errors, and ultrasonic `VALID`. The
+application is 0x59c70 bytes with SHA-256
+`D609BDF6BD47F41F07109EB125E09A69F40C94211D511373C9B7CDC1DF6261E3`.
+
+The preceding T-finish image added an IDLE-only `p` ASCII camera-view diagnostic and
+calibrates the photographed T finish to width/area 800/200 with two decoded
+candidate frames. Finish classification itself is hard-disabled from autonomy
+startup through left strafe, forward motion, right strafe, and stationary line
+confirmation. T-like shapes remain ordinary connected lines and cannot emit
+`CAM=1111` during those phases. Only after `bypass_completed` is set does the
+camera gate open with its candidate count cleared; a new two-frame T sequence
+then enters latched `FINISHED` with zero motor policy. Synthetic normal-line,
+thin-T, one-row artifact, temporal-reset, obstacle, and full host regressions
+pass, as does the full ESP-IDF build. The verified ESP32-S3 rev0.2 at MAC
+`9c:cc:01:fb:8f:9c` accepted all three images with valid Flash hashes. The
+eight-second no-command check remained `IDLE`, `cmd=0,0,0`, camera fresh with
+zero decode errors and zero camera drops. The real T endpoint measured
+width 800--1000 and component area 452--490 permille, but correctly remained
+ordinary `CAM=0010` while the finish gate was closed. The `p` command also
+returned the actual 80x60 camera view. The active application is 0x5a040 bytes with
+SHA-256
+`B3589C3380A6536A4B57116B8AF1438CD471F8738CF23DC74D67A414CF1006EC`.
+
+A stricter-shadow image is active with the additional absolute grayscale
+ceiling of 120. Host tests prove that a connected grey-130 stripe on a
+white-225 floor is rejected while a black-90 stripe remains detected; the full
+ESP-IDF build also passes. The image is 0x5a060 bytes with SHA-256
+`F30F62CA08FA579A5734DAE3BB74CEE0BC16C890A74DD9979A8F7F129EDCA401`.
+After intermittent CP210x TX/sync failures, holding BOOT through reset allowed
+the verified S3 to be identified, and a direct 115200-baud ROM no-stub write
+completed with all three Flash hashes valid. The no-command check remained
+`IDLE`, `cmd=0,0,0`, camera fresh with zero camera drops/errors, and reported
+the expected capped `thr=120`. The previous large grey region disappeared;
+only a 34--48 permille deep-black component remained. The 80x60 `p` view also
+showed that the physical black tape had shifted to the central ROI's right
+edge/outside it during wiring, so a centered-track placement is still required
+before judging position calibration or autonomous steering.
+
+The preceding timed-finish image kept the camera T-shape classifier compiled for
+diagnostics and host coverage but leaves its runtime gate disabled. After the
+right strafe reacquires black and completes five stationary confirmation cycles,
+the supervisor enters `POST_FORWARD_500MS`, resumes normal camera line steering
+for exactly 500 ms, and then latches `FINISHED` with zero motor policy. A `1111`
+camera pattern during this interval is ordinary line input and cannot finish the
+run early. Host tests cover the exact 500 ms boundary and ignored `1111`; the
+full ESP-IDF build passes. The verified ESP32-S3 rev0.2 at MAC
+`9c:cc:01:fb:8f:9c` accepted bootloader, partition table, and application by
+115200-baud ROM no-stub flashing with all hashes valid. The eight-second
+no-command check remained `IDLE`, `cmd=0,0,0`, with fresh camera data, zero
+camera errors, and live ultrasonic readings. The application is 0x5a090 bytes
+with SHA-256
+`2CDABF3A141175416B6741C59A5B07A12F087399E32623D6CA3EA8021B9FB357`.
+
+The active closer-obstacle / longer-finish build uses raw Echo 20--60 mm to
+start avoidance, while 61 mm and above remains normal line following. The
+1191 ms fixed forward segment is deliberately retained rather than reverting to
+940 ms, giving about 40 mm more clearance beyond the obstacle. After right
+strafe and five stationary line-confirmation cycles, the camera-steered final
+forward interval is now 1000 ms before latched `FINISHED`; its telemetry state
+name is `POST_FORWARD_1S`. Boundary host tests and the complete ESP-IDF build
+pass. The 0x5a090-byte image has SHA-256
+`551F581933F3C33E5E65F0D00FBBDD6E082EBD20710A532A86A0B189A82DC26C`.
+After several intermittent UART failures, the verified ESP32-S3 rev0.2 at MAC
+`9c:cc:01:fb:8f:9c` accepted bootloader, partition table, and application by
+115200-baud ROM no-stub flashing; all three written-image hashes passed. The
+eight-second post-reset check remained `IDLE`, `cmd=0,0,0`, with fresh camera
+frames, zero camera drops/errors, and live ultrasonic readings around
+298--340 mm.
+
 The current installation uses ESP-IDF at `C:\esp\v5.4.4\esp-idf` and Espressif tools under `C:\Espressif\tools`. These are machine-local paths and are not committed as VS Code settings.
 
 ## Next Work
@@ -333,9 +484,10 @@ The current installation uses ESP-IDF at `C:\esp\v5.4.4\esp-idf` and Espressif t
 4. On the competition surface, measure at least five `q/e` displacements and
    five `g` forward displacements. Use medians to calibrate lateral and forward
    milliseconds per centimetre.
-5. Measure the scaled 1231/1191 ms fixed segments and the right segment's actual
+5. Measure the scaled 1170/1191 ms fixed segments and the right segment's actual
    early-stop time (960 ms maximum). Verify same-cycle braking, five-cycle line
-   confirmation, line-follow resume, and the post-bypass `1111 -> FINISHED` stop.
+   confirmation, 1000 ms camera-steered forward motion, and the subsequent
+   latched `FINISHED` stop. Confirm that `1111` cannot end that interval early.
 6. Filter the motor-induced encoder glitches before replacing time-calibrated
    segments with encoder distance control. Add MPU6500 only if heading drift
    makes the open-loop rectangular path insufficiently repeatable.
