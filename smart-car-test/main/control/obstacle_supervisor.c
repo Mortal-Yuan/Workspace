@@ -10,11 +10,6 @@ typedef enum {
     OBSERVATION_UNCERTAIN,
 } observation_t;
 
-static bool line_detected(line_sensor_sample_t line)
-{
-    return line.left || line.left_center || line.right_center || line.right;
-}
-
 static obstacle_transition_t transition_for(obstacle_state_t state)
 {
     switch (state) {
@@ -36,8 +31,6 @@ static obstacle_transition_t transition_for(obstacle_state_t state)
         return OBSTACLE_TRANSITION_TO_SETTLE_RIGHT;
     case OBSTACLE_STATE_STRAFE_RIGHT_DISTANCE:
         return OBSTACLE_TRANSITION_TO_STRAFE_RIGHT_DISTANCE;
-    case OBSTACLE_STATE_LINE_CONFIRM:
-        return OBSTACLE_TRANSITION_TO_LINE_CONFIRM;
     case OBSTACLE_STATE_POST_BYPASS_FORWARD:
         return OBSTACLE_TRANSITION_TO_POST_BYPASS_FORWARD;
     case OBSTACLE_STATE_FINISHED:
@@ -121,7 +114,18 @@ static bool maneuver_state(obstacle_state_t state)
 {
     return state == OBSTACLE_STATE_STRAFE_LEFT_DISTANCE ||
            state == OBSTACLE_STATE_FORWARD_DISTANCE ||
-           state == OBSTACLE_STATE_STRAFE_RIGHT_DISTANCE;
+           state == OBSTACLE_STATE_STRAFE_RIGHT_DISTANCE ||
+           state == OBSTACLE_STATE_POST_BYPASS_FORWARD;
+}
+
+static int ramp_speed(int start_speed, int target_speed,
+                      int ramp_ms, int64_t elapsed_us)
+{
+    if (elapsed_us <= 0) return start_speed;
+    const int64_t ramp_us = ramp_ms * 1000LL;
+    if (elapsed_us >= ramp_us) return target_speed;
+    return start_speed + (int)(((int64_t)(target_speed - start_speed) *
+                                elapsed_us) / ramp_us);
 }
 
 static void apply_policy(const obstacle_supervisor_t *supervisor,
@@ -132,7 +136,6 @@ static void apply_policy(const obstacle_supervisor_t *supervisor,
     int speed;
     switch (supervisor->state) {
     case OBSTACLE_STATE_CLEAR:
-    case OBSTACLE_STATE_POST_BYPASS_FORWARD:
         decision->policy = MOTION_POLICY_LINE_FOLLOW;
         break;
     case OBSTACLE_STATE_STRAFE_LEFT_DISTANCE:
@@ -144,6 +147,7 @@ static void apply_policy(const obstacle_supervisor_t *supervisor,
         decision->override_motion.left = (int16_t)speed;
         break;
     case OBSTACLE_STATE_FORWARD_DISTANCE:
+    case OBSTACLE_STATE_POST_BYPASS_FORWARD:
         speed = now_us - supervisor->phase_started_us <
                 supervisor->config.motion_boost_ms * 1000LL ?
                 supervisor->config.forward_start_speed :
@@ -152,12 +156,16 @@ static void apply_policy(const obstacle_supervisor_t *supervisor,
         decision->override_motion.forward = (int16_t)speed;
         break;
     case OBSTACLE_STATE_STRAFE_RIGHT_DISTANCE:
-        speed = now_us - supervisor->phase_started_us <
-                supervisor->config.motion_boost_ms * 1000LL ?
-                supervisor->config.lateral_start_speed :
-                supervisor->config.lateral_speed;
+        speed = ramp_speed(supervisor->config.right_lateral_start_speed,
+                           supervisor->config.lateral_speed,
+                           supervisor->config.right_lateral_ramp_ms,
+                           now_us - supervisor->phase_started_us);
         decision->policy = MOTION_POLICY_OVERRIDE;
         decision->override_motion.left = (int16_t)-speed;
+        decision->override_motion.clockwise = (int16_t)ramp_speed(
+            supervisor->config.right_lateral_start_clockwise, 0,
+            supervisor->config.right_lateral_ramp_ms,
+            now_us - supervisor->phase_started_us);
         break;
     default:
         break;
@@ -181,13 +189,11 @@ void obstacle_supervisor_reset(obstacle_supervisor_t *supervisor)
     supervisor->no_echo_count = 0;
     supervisor->last_seq = 0;
     supervisor->phase_started_us = 0;
-    supervisor->bypass_completed = false;
 }
 
 obstacle_decision_t obstacle_supervisor_step(
     obstacle_supervisor_t *supervisor,
     const ultrasonic_event_t *event,
-    line_sensor_sample_t line,
     int64_t now_us)
 {
     obstacle_decision_t decision = {0};
@@ -308,44 +314,13 @@ obstacle_decision_t obstacle_supervisor_step(
         if (observation == OBSERVATION_NEAR) {
             enter_state(supervisor, &decision, OBSTACLE_STATE_FAILSAFE,
                         OBSTACLE_REASON_NEAR, now_us);
-        } else if (line_detected(line)) {
-            /* Stop lateral motion in the first cycle that sees the line. */
-            enter_state(supervisor, &decision,
-                        OBSTACLE_STATE_LINE_CONFIRM,
-                        OBSTACLE_REASON_LINE_SEEN, now_us);
-            supervisor->clear_count = 1;
         } else if (elapsed_us >=
                    supervisor->config.right_strafe_ms * 1000LL) {
-            /* Failing to see the line is not a maneuver safety fault.  Stop
-             * the open-loop strafe and hand control to the alternating line
-             * search instead of latching zero output. */
-            enter_state(supervisor, &decision, OBSTACLE_STATE_CLEAR,
-                        OBSTACLE_REASON_LINE_LOST, now_us);
-            decision.line_action = LINE_ACTION_RESUME;
-        }
-        break;
-
-    case OBSTACLE_STATE_LINE_CONFIRM:
-        if (observation == OBSERVATION_NEAR) {
-            enter_state(supervisor, &decision, OBSTACLE_STATE_FAILSAFE,
-                        OBSTACLE_REASON_NEAR, now_us);
-        } else if (!line_detected(line)) {
-            enter_state(supervisor, &decision, OBSTACLE_STATE_CLEAR,
-                        OBSTACLE_REASON_LINE_LOST, now_us);
-            decision.line_action = LINE_ACTION_RESUME;
-        } else {
-            if (supervisor->clear_count <
-                (uint8_t)supervisor->config.line_confirm_count) {
-                supervisor->clear_count++;
-            }
-            if (supervisor->clear_count >=
-                (uint8_t)supervisor->config.line_confirm_count) {
-                supervisor->bypass_completed = true;
-                enter_state(supervisor, &decision,
-                            OBSTACLE_STATE_POST_BYPASS_FORWARD,
-                            OBSTACLE_REASON_LINE_CONFIRMED, now_us);
-                decision.line_action = LINE_ACTION_RESUME;
-            }
+            /* Line input is deliberately ignored after avoidance starts.
+             * Complete the full right strafe, then drive straight. */
+            enter_state(supervisor, &decision,
+                        OBSTACLE_STATE_POST_BYPASS_FORWARD,
+                        OBSTACLE_REASON_SEGMENT_COMPLETE, now_us);
         }
         break;
 
@@ -382,11 +357,10 @@ const char *obstacle_state_name(obstacle_state_t state)
     case OBSTACLE_STATE_BRAKE: return "BRAKE";
     case OBSTACLE_STATE_STRAFE_LEFT_DISTANCE: return "LEFT_STRAFE";
     case OBSTACLE_STATE_SETTLE_FORWARD: return "SETTLE_FORWARD";
-    case OBSTACLE_STATE_FORWARD_DISTANCE: return "FORWARD_19CM";
+    case OBSTACLE_STATE_FORWARD_DISTANCE: return "FORWARD_TIMED";
     case OBSTACLE_STATE_SETTLE_RIGHT: return "SETTLE_RIGHT";
-    case OBSTACLE_STATE_STRAFE_RIGHT_DISTANCE: return "RIGHT_12CM";
-    case OBSTACLE_STATE_LINE_CONFIRM: return "LINE_CONFIRM";
-    case OBSTACLE_STATE_POST_BYPASS_FORWARD: return "POST_FORWARD_1S";
+    case OBSTACLE_STATE_STRAFE_RIGHT_DISTANCE: return "RIGHT_RAMP";
+    case OBSTACLE_STATE_POST_BYPASS_FORWARD: return "FINAL_FORWARD_525MS";
     case OBSTACLE_STATE_FINISHED: return "FINISHED";
     case OBSTACLE_STATE_FAILSAFE: return "FAILSAFE";
     default: return "UNKNOWN";

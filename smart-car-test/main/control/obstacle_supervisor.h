@@ -17,7 +17,6 @@ typedef enum {
     OBSTACLE_STATE_FORWARD_DISTANCE,
     OBSTACLE_STATE_SETTLE_RIGHT,
     OBSTACLE_STATE_STRAFE_RIGHT_DISTANCE,
-    OBSTACLE_STATE_LINE_CONFIRM,
     OBSTACLE_STATE_POST_BYPASS_FORWARD,
     OBSTACLE_STATE_FINISHED,
     OBSTACLE_STATE_FAILSAFE,
@@ -46,7 +45,6 @@ typedef enum {
     OBSTACLE_TRANSITION_TO_FORWARD_DISTANCE,
     OBSTACLE_TRANSITION_TO_SETTLE_RIGHT,
     OBSTACLE_TRANSITION_TO_STRAFE_RIGHT_DISTANCE,
-    OBSTACLE_TRANSITION_TO_LINE_CONFIRM,
     OBSTACLE_TRANSITION_TO_POST_BYPASS_FORWARD,
     OBSTACLE_TRANSITION_TO_FINISHED,
     OBSTACLE_TRANSITION_TO_FAILSAFE,
@@ -62,9 +60,6 @@ typedef enum {
     OBSTACLE_REASON_BRAKE_COMPLETE,
     OBSTACLE_REASON_EDGE_CLEAR,
     OBSTACLE_REASON_SEGMENT_COMPLETE,
-    OBSTACLE_REASON_LINE_SEEN,
-    OBSTACLE_REASON_LINE_LOST,
-    OBSTACLE_REASON_LINE_CONFIRMED,
     OBSTACLE_REASON_FINISH_LINE,
     OBSTACLE_REASON_POST_BYPASS_COMPLETE,
     OBSTACLE_REASON_TIMEOUT,
@@ -88,7 +83,6 @@ typedef struct {
     uint8_t no_echo_count;
     uint32_t last_seq;
     int64_t phase_started_us;
-    bool bypass_completed;
 } obstacle_supervisor_t;
 
 void obstacle_supervisor_init(obstacle_supervisor_t *supervisor,
@@ -97,6 +91,5 @@ void obstacle_supervisor_reset(obstacle_supervisor_t *supervisor);
 obstacle_decision_t obstacle_supervisor_step(
     obstacle_supervisor_t *supervisor,
     const ultrasonic_event_t *event,
-    line_sensor_sample_t line,
     int64_t now_us);
 const char *obstacle_state_name(obstacle_state_t state);

@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "app_events.h"
+#include "camera_preview.h"
 #include "diagnostic_types.h"
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
@@ -11,7 +12,7 @@
 #include "freertos/task.h"
 
 #define DIAGNOSTICS_CRITICAL_DEPTH 16
-#define DIAGNOSTICS_MESSAGE_MAX 768
+#define DIAGNOSTICS_MESSAGE_MAX 1024
 #define DIAGNOSTICS_TASK_STACK 4096
 
 typedef struct {
@@ -52,8 +53,13 @@ typedef struct {
     StackType_t task_stack[DIAGNOSTICS_TASK_STACK];
     TaskHandle_t task;
     portMUX_TYPE counter_lock;
+    portMUX_TYPE preview_lock;
     uint32_t dropped_critical;
     uint32_t dropped_transport;
+    int64_t preview_keepalive_us;
+    bool preview_active;
+    bool preview_request_pending;
+    bool preview_requested_state;
     bool uart_ready;
     bool task_ready;
 } diagnostics_t;
@@ -67,4 +73,8 @@ void diagnostics_publish_critical(diagnostics_t *diagnostics,
                                   const diagnostic_event_t *event);
 void diagnostics_publish_snapshot(diagnostics_t *diagnostics,
                                   const diagnostic_snapshot_t *snapshot);
+void diagnostics_request_usb_preview(diagnostics_t *diagnostics,
+                                     bool enabled);
+void diagnostics_write_camera_preview(
+    void *context, const camera_preview_packet_t *packet);
 uint32_t diagnostics_drop_count(diagnostics_t *diagnostics);

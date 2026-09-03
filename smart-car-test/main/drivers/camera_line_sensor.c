@@ -15,6 +15,7 @@ enum {
     CAMERA_USB_PID = 0x3307,
     CAMERA_FRAME_BUFFER_BYTES = 512 * 1024,
     CAMERA_URB_BYTES = 10 * 1024,
+    CAMERA_PREVIEW_PERIOD_US = 200000,
 };
 
 typedef struct {
@@ -26,8 +27,23 @@ typedef struct {
 } camera_stream_profile_t;
 
 static const camera_stream_profile_t CAMERA_PROFILES[] = {
-    {640, 480, 15.0f, JPEG_IMAGE_SCALE_1_8, "MJPEG 640x480 @ 15 fps"},
+    {640, 480, 15.0f, JPEG_IMAGE_SCALE_1_8,
+     "MJPEG 640x480 @ 15 fps, 80x60 decode"},
 };
+
+_Static_assert((int)CAMERA_LINE_OUTPUT_WIDTH <=
+                   (int)CAMERA_BALL_VISION_MAX_WIDTH,
+               "ball workspace is smaller than the decoded camera frame");
+_Static_assert((int)CAMERA_LINE_OUTPUT_HEIGHT <=
+                   (int)CAMERA_BALL_VISION_MAX_HEIGHT,
+               "ball workspace is smaller than the decoded camera frame");
+_Static_assert((int)CAMERA_LINE_OUTPUT_HEIGHT / 2 <=
+                   (int)CAMERA_LINE_VISION_MAX_HEIGHT,
+               "line workspace is shorter than the lower camera half");
+_Static_assert(CAMERA_LINE_OUTPUT_WIDTH *
+                   (CAMERA_LINE_OUTPUT_HEIGHT / 2) <=
+                   CAMERA_LINE_VISION_MAX_ROI_PIXELS,
+               "line workspace is smaller than the lower camera half");
 
 static const char *TAG = "camera_line";
 
@@ -148,10 +164,46 @@ static void usb_host_event_task(void *argument)
     }
 }
 
-static void publish_analysis(camera_line_sensor_t *sensor,
-                             camera_line_analysis_t analysis,
-                             camera_ball_observation_t ball,
-                             int64_t now_us)
+static camera_ball_observation_t confirm_target(
+    camera_line_sensor_t *sensor, camera_ball_observation_t target,
+    camera_target_tracker_t *tracker)
+{
+    if (target.candidate) {
+        const int delta_x = target.center_x_permille -
+            tracker->track_x_permille;
+        const int delta_y = (int)target.center_y_permille -
+            tracker->track_y_permille;
+        const bool same_track = tracker->stable_frames > 0U &&
+            (delta_x < 0 ? -delta_x : delta_x) <=
+                sensor->ball_config.tracking_tolerance_permille &&
+            (delta_y < 0 ? -delta_y : delta_y) <=
+                sensor->ball_config.tracking_tolerance_permille;
+        if (same_track) {
+            if (tracker->stable_frames < UINT8_MAX) {
+                ++tracker->stable_frames;
+            }
+        } else {
+            tracker->stable_frames = 1;
+        }
+        tracker->track_x_permille = target.center_x_permille;
+        tracker->track_y_permille = target.center_y_permille;
+    } else {
+        tracker->stable_frames = 0;
+    }
+    target.stable_frames = tracker->stable_frames;
+    const int required_frames = target.far_candidate ?
+        sensor->ball_config.far_confirm_frames :
+        sensor->ball_config.confirm_frames;
+    target.detected = target.candidate &&
+        target.stable_frames >= required_frames;
+    return target;
+}
+
+static void publish_analysis(
+    camera_line_sensor_t *sensor, camera_line_analysis_t analysis,
+    camera_ball_observation_t red_ball,
+    camera_ball_observation_t left_target,
+    camera_ball_observation_t right_target, int64_t now_us)
 {
     portENTER_CRITICAL(&sensor->lock);
     const bool reliable_history_candidate =
@@ -233,34 +285,14 @@ static void publish_analysis(camera_line_sensor_t *sensor,
         analysis.connected_component_count;
     sensor->snapshot.threshold = analysis.threshold;
     sensor->snapshot.contrast = analysis.contrast;
-    if (ball.candidate) {
-        const int delta_x = ball.center_x_permille -
-            sensor->ball_track_x_permille;
-        const int delta_y = (int)ball.center_y_permille -
-            sensor->ball_track_y_permille;
-        const bool same_track = sensor->ball_stable_color == ball.color &&
-            (delta_x < 0 ? -delta_x : delta_x) <=
-                sensor->ball_config.tracking_tolerance_permille &&
-            (delta_y < 0 ? -delta_y : delta_y) <=
-                sensor->ball_config.tracking_tolerance_permille;
-        if (same_track) {
-            if (sensor->ball_stable_frames < UINT8_MAX) {
-                ++sensor->ball_stable_frames;
-            }
-        } else {
-            sensor->ball_stable_color = ball.color;
-            sensor->ball_stable_frames = 1;
-        }
-        sensor->ball_track_x_permille = ball.center_x_permille;
-        sensor->ball_track_y_permille = ball.center_y_permille;
-    } else {
-        sensor->ball_stable_color = BALL_COLOR_NONE;
-        sensor->ball_stable_frames = 0;
-    }
-    ball.stable_frames = sensor->ball_stable_frames;
-    ball.detected = ball.candidate &&
-        ball.stable_frames >= sensor->ball_config.confirm_frames;
-    sensor->snapshot.ball = ball;
+    red_ball = confirm_target(sensor, red_ball, &sensor->red_tracker);
+    left_target = confirm_target(
+        sensor, left_target, &sensor->left_target_tracker);
+    right_target = confirm_target(
+        sensor, right_target, &sensor->right_target_tracker);
+    sensor->snapshot.ball = red_ball;
+    sensor->snapshot.left_target = left_target;
+    sensor->snapshot.right_target = right_target;
     sensor->snapshot.updated_us = now_us;
     ++sensor->snapshot.decoded_frames;
     portEXIT_CRITICAL(&sensor->lock);
@@ -312,8 +344,13 @@ static void decode_task(void *argument)
                     &sensor->config, sensor->vision_workspace,
                     has_previous_line, previous_center_permille,
                     previous_steering_permille);
-            const camera_ball_observation_t ball =
-                camera_ball_analyze_rgb888(
+            camera_ball_observation_t red_ball =
+                camera_ball_analyze_color_rgb888(
+                    sensor->rgb_buffer, output.width, output.height, false,
+                    BALL_COLOR_RED,
+                    &sensor->ball_config, sensor->ball_workspace);
+            camera_blue_target_pair_t blue_targets =
+                camera_blue_targets_analyze_rgb888(
                     sensor->rgb_buffer, output.width, output.height, false,
                     &sensor->ball_config, sensor->ball_workspace);
             bool dump_view = false;
@@ -321,9 +358,16 @@ static void decode_task(void *argument)
             dump_view = sensor->ascii_view_requested;
             sensor->ascii_view_requested = false;
             portEXIT_CRITICAL(&sensor->lock);
+            const int64_t decoded_us = esp_timer_get_time();
             if (analysis.valid) {
-                publish_analysis(sensor, analysis, ball,
-                                 esp_timer_get_time());
+                publish_analysis(sensor, analysis, red_ball,
+                                 blue_targets.left_target,
+                                 blue_targets.right_target, decoded_us);
+                portENTER_CRITICAL(&sensor->lock);
+                red_ball = sensor->snapshot.ball;
+                blue_targets.left_target = sensor->snapshot.left_target;
+                blue_targets.right_target = sensor->snapshot.right_target;
+                portEXIT_CRITICAL(&sensor->lock);
             } else {
                 portENTER_CRITICAL(&sensor->lock);
                 ++sensor->snapshot.decode_errors;
@@ -332,6 +376,27 @@ static void decode_task(void *argument)
             if (dump_view) {
                 dump_ascii_view(sensor->rgb_buffer, output.width,
                                 output.height);
+            }
+            bool publish_preview = false;
+            uint32_t preview_sequence = 0;
+            portENTER_CRITICAL(&sensor->lock);
+            if (sensor->usb_preview_enabled && sensor->preview_sink != NULL &&
+                sensor->preview_packet != NULL &&
+                decoded_us >= sensor->next_preview_us) {
+                sensor->next_preview_us = decoded_us +
+                    CAMERA_PREVIEW_PERIOD_US;
+                preview_sequence = sensor->snapshot.received_frames;
+                publish_preview = true;
+            }
+            portEXIT_CRITICAL(&sensor->lock);
+            if (publish_preview && camera_preview_build_rgb332(
+                    sensor->preview_packet, sensor->rgb_buffer,
+                    output.width, output.height, &sensor->config,
+                    &analysis, &red_ball, &blue_targets.left_target,
+                    &blue_targets.right_target, preview_sequence,
+                    (uint32_t)(decoded_us / 1000))) {
+                sensor->preview_sink(sensor->preview_sink_context,
+                                     sensor->preview_packet);
             }
         } else {
             portENTER_CRITICAL(&sensor->lock);
@@ -398,7 +463,9 @@ static esp_err_t open_camera_stream(camera_line_sensor_t *sensor)
 
 esp_err_t camera_line_sensor_init(camera_line_sensor_t *sensor,
                                   const camera_line_config_t *config,
-                                  const camera_ball_config_t *ball_config)
+                                  const camera_ball_config_t *ball_config,
+                                  camera_preview_sink_t preview_sink,
+                                  void *preview_sink_context)
 {
     if (sensor == NULL || config == NULL || ball_config == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -406,6 +473,8 @@ esp_err_t camera_line_sensor_init(camera_line_sensor_t *sensor,
     memset(sensor, 0, sizeof(*sensor));
     sensor->config = *config;
     sensor->ball_config = *ball_config;
+    sensor->preview_sink = preview_sink;
+    sensor->preview_sink_context = preview_sink_context;
     sensor->lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
     sensor->rgb_buffer_size = CAMERA_LINE_OUTPUT_WIDTH *
                               CAMERA_LINE_OUTPUT_HEIGHT * 3;
@@ -420,6 +489,12 @@ esp_err_t camera_line_sensor_init(camera_line_sensor_t *sensor,
         1, sizeof(*sensor->ball_workspace),
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (sensor->ball_workspace == NULL) return ESP_ERR_NO_MEM;
+    if (preview_sink != NULL) {
+        sensor->preview_packet = heap_caps_calloc(
+            1, sizeof(*sensor->preview_packet),
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (sensor->preview_packet == NULL) return ESP_ERR_NO_MEM;
+    }
 
     sensor->frame_queue = xQueueCreateStatic(
         1, sizeof(uvc_host_frame_t *), sensor->frame_queue_storage,
@@ -454,7 +529,8 @@ esp_err_t camera_line_sensor_init(camera_line_sensor_t *sensor,
 
     sensor->decode_task = xTaskCreateStatic(
         decode_task, "camera_line_decode", CAMERA_LINE_DECODE_TASK_STACK,
-        sensor, 8, sensor->decode_task_stack, &sensor->decode_task_buffer);
+        sensor, CAMERA_LINE_DECODE_TASK_PRIORITY, sensor->decode_task_stack,
+        &sensor->decode_task_buffer);
     if (sensor->decode_task == NULL) return ESP_ERR_NO_MEM;
 
     result = uvc_host_stream_start(sensor->stream);
@@ -462,8 +538,8 @@ esp_err_t camera_line_sensor_init(camera_line_sensor_t *sensor,
     update_streaming(sensor, true);
     sensor->initialized = true;
     ESP_LOGI(TAG,
-             "camera line sensor started; decode=%dx%d lower-half analysis "
-             "native orientation",
+             "camera line sensor started; decode=%dx%d, full-frame "
+             "ball and lower-half line analysis, native orientation",
              CAMERA_LINE_OUTPUT_WIDTH, CAMERA_LINE_OUTPUT_HEIGHT);
     return ESP_OK;
 }
@@ -493,6 +569,16 @@ bool camera_line_sensor_request_ascii_view(camera_line_sensor_t *sensor)
     }
     portEXIT_CRITICAL(&sensor->lock);
     return accepted;
+}
+
+void camera_line_sensor_set_usb_preview(camera_line_sensor_t *sensor,
+                                        bool enabled)
+{
+    if (sensor == NULL) return;
+    portENTER_CRITICAL(&sensor->lock);
+    sensor->usb_preview_enabled = enabled;
+    if (enabled) sensor->next_preview_us = 0;
+    portEXIT_CRITICAL(&sensor->lock);
 }
 
 void camera_line_sensor_set_finish_detection_enabled(

@@ -30,6 +30,7 @@ typedef struct {
     bool valid;
     bool candidate;
     bool detected;
+    bool far_candidate;
     ball_color_t color;
     uint8_t stable_frames;
     int16_t center_x_permille;
@@ -50,7 +51,15 @@ typedef struct {
     uint8_t probe_green;
     uint8_t probe_blue;
     uint16_t matched_pixels;
+    uint16_t strong_pixels;
+    uint16_t highlight_pixels;
     uint8_t component_count;
+    /* Bounding-box edges are normalized to 0..1000 so control and preview do
+     * not depend on the detector's decode resolution. */
+    uint16_t box_left_permille;
+    uint16_t box_top_permille;
+    uint16_t box_right_permille;
+    uint16_t box_bottom_permille;
 } camera_ball_observation_t;
 
 typedef struct {
@@ -71,7 +80,12 @@ typedef struct {
     uint8_t connected_component_count;
     uint8_t threshold;
     uint8_t contrast;
+    /* ball is the red object to collect.  Blue components remain separated
+     * by image side for detection and display, but ball control consumes
+     * them as an unordered set and remembers the first confirmed target. */
     camera_ball_observation_t ball;
+    camera_ball_observation_t left_target;
+    camera_ball_observation_t right_target;
     uint32_t received_frames;
     uint32_t decoded_frames;
     uint32_t dropped_frames;

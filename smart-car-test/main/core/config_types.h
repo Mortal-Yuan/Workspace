@@ -13,6 +13,16 @@ typedef struct {
 } kiwi_kinematics_config_t;
 
 typedef struct {
+    int forward_speed;
+    int forward_start_speed;
+    int forward_boost_ms;
+    int forward_ms;
+    int settle_ms;
+    int right_turn_speed;
+    int right_turn_ms;
+} startup_maneuver_config_t;
+
+typedef struct {
     int straight_speed;
     int curve_speed;
     int curve_max;
@@ -60,17 +70,104 @@ typedef struct {
 } camera_line_config_t;
 
 typedef struct {
+    /* Weak red admits dim/desaturated edges.  A connected component must also
+     * contain enough pixels from the stricter strong-red gate below. */
     int red_minimum;
     int red_dominance;
     int red_ratio_permille;
+    int strong_red_dominance;
+    int strong_red_ratio_permille;
+    /* Blue uses the same seeded-component pipeline, with thresholds calibrated
+     * independently from the live 80x60 image. */
+    int blue_minimum;
+    int blue_dominance;
+    int blue_ratio_permille;
+    int strong_blue_dominance;
+    int strong_blue_ratio_permille;
+    int minimum_strong_pixels;
+    int minimum_strong_ratio_permille;
     int minimum_mean_red_dominance;
+    int minimum_mean_blue_dominance;
     int minimum_area_permille;
+    /* A very small, high-confidence component is accepted only as a far
+     * candidate and must remain stable for more decoded frames. */
+    int far_minimum_area_permille;
+    int far_minimum_confidence_permille;
     int minimum_fill_permille;
     int minimum_roundness_permille;
+    int minimum_blue_roundness_permille;
+    /* Blue destination patches may be only a few decoded pixels at long
+     * range.  Keep their raw-pixel gate separate from the red-ball area gate
+     * and require a strong, high-confidence connected component. */
+    int blue_target_minimum_pixels;
+    int blue_target_minimum_strong_pixels;
+    int blue_target_minimum_mean_dominance;
+    int blue_target_minimum_confidence_permille;
+    int blue_target_minimum_roundness_permille;
+    /* Bright low-chroma pixels are admitted only when locally surrounded by
+     * same-color support.  This repairs specular holes without making white
+     * objects independent ball candidates. */
+    int highlight_minimum;
+    int highlight_max_chroma;
+    int highlight_target_tolerance;
+    int highlight_expand_passes;
     int edge_margin_pixels;
     int tracking_tolerance_permille;
     int confirm_frames;
+    int far_confirm_frames;
 } camera_ball_config_t;
+
+typedef struct {
+    int target_center_x_permille;
+    /* Before collecting the ball, strafe until the red ball and blue goal
+     * share approximately the same viewing ray. */
+    int route_deadband_permille;
+    int route_lateral_speed;
+    int route_pulse_ms;
+    int route_confirm_frames;
+    int route_align_timeout_ms;
+    int align_deadband_permille;
+    int realign_threshold_permille;
+    int steering_gain_permille;
+    int maximum_correction;
+    int search_speed;
+    int search_pulse_ms;
+    int search_left_ms;
+    int search_right_ms;
+    int search_settle_ms;
+    int goal_search_speed;
+    int acquire_timeout_ms;
+    int align_speed;
+    int align_pulse_ms;
+    int align_settle_ms;
+    int align_confirm_frames;
+    int far_forward_speed;
+    int medium_forward_speed;
+    int near_forward_speed;
+    int forward_boost_speed;
+    int forward_boost_ms;
+    int medium_y_permille;
+    int near_y_permille;
+    int capture_center_y_permille;
+    int capture_height_permille;
+    int capture_area_permille;
+    int capture_box_bottom_permille;
+    int capture_confirm_frames;
+    int capture_verify_max_frames;
+    int maximum_approach_ms;
+    /* Once the ball is in the clip, steer on the blue goal while pushing. */
+    int push_speed;
+    int push_boost_speed;
+    int push_boost_ms;
+    int push_steering_gain_permille;
+    int push_maximum_correction;
+    int push_realign_threshold_permille;
+    int push_timeout_ms;
+    int goal_overlap_margin_permille;
+    int goal_overlap_confirm_frames;
+    int maximum_total_ms;
+    int recovery_wait_ms;
+} ball_approach_config_t;
 
 typedef struct {
     int timeout_us;
@@ -86,7 +183,6 @@ typedef struct {
     bool bypass_enabled;
     int stop_mm;
     int clear_confirm_count;
-    int line_confirm_count;
     int no_echo_limit;
     int uncertain_limit;
     int brake_ms;
@@ -97,6 +193,10 @@ typedef struct {
     int forward_speed;
     int forward_start_speed;
     int forward_drive_ms;
+    int right_lateral_start_speed;
+    /* Signed body yaw command; negative counteracts clockwise launch drift. */
+    int right_lateral_start_clockwise;
+    int right_lateral_ramp_ms;
     int right_strafe_ms;
     int post_bypass_forward_ms;
 } obstacle_config_t;

@@ -41,8 +41,10 @@ motor_command_t kiwi_inverse_kinematics(
     if (b > 0 && b < config->motor_b_positive_minimum) {
         b = config->motor_b_positive_minimum;
     }
-    if (motion.left != 0 && motion.forward == 0 &&
-        motion.clockwise == 0) {
+    /* Lateral side wheels still need their measured floor when a small yaw
+     * correction is superimposed; otherwise the correction can reduce A/C
+     * below breakaway torque and create more launch yaw. */
+    if (motion.left != 0 && motion.forward == 0) {
         if (a > 0 && a < config->lateral_side_wheel_minimum) {
             a = config->lateral_side_wheel_minimum;
         } else if (a < 0 && -a < config->lateral_side_wheel_minimum) {

@@ -29,6 +29,9 @@ typedef struct {
     bool help;
     bool enable_display;
     bool camera_view;
+    bool preview_enable;
+    bool preview_disable;
+    bool ball_approach;
 } command_intents_t;
 
 static void enable_status_display(app_controller_t *controller)
@@ -56,6 +59,20 @@ static void publish_event(app_controller_t *controller,
         snprintf(event.text, sizeof(event.text), "%s", text);
     }
     diagnostics_publish_critical(&controller->diagnostics, &event);
+}
+
+static void publish_startup_transition(
+    app_controller_t *controller,
+    startup_maneuver_decision_t decision,
+    int64_t now_us)
+{
+    if (decision.transition == STARTUP_MANEUVER_TRANSITION_NONE) return;
+    publish_event(controller, DIAGNOSTIC_EVENT_INFO,
+                  decision.transition,
+                  controller->startup_maneuver.phase,
+                  startup_maneuver_phase_name(
+                      controller->startup_maneuver.phase),
+                  now_us);
 }
 
 static void set_fault(app_controller_t *controller, fault_source_t source,
@@ -146,6 +163,8 @@ static void start_autonomy(app_controller_t *controller, int64_t now_us,
     line_follow_reset_for_start(&controller->line_follow,
                                 controller->latest_line);
     obstacle_supervisor_reset(&controller->obstacle);
+    startup_maneuver_reset(&controller->startup_maneuver);
+    ball_approach_reset(&controller->ball_approach);
     ultrasonic_restart_session(&controller->ultrasonic, now_us);
     controller->mode = APP_MODE_AUTONOMOUS;
     publish_event(controller, DIAGNOSTIC_EVENT_MODE,
@@ -164,7 +183,7 @@ static command_intents_t parse_commands(command_batch_t batch,
         case 'f': intents.force_auto = true; break;
         case 'w': case 's': case 'a': case 'd':
         case '1': case '2': case '3': intents.motion = command; break;
-        case 'r': case 't': case 'q': case 'e': case 'g':
+        case 'r': case 't': case 'y': case 'q': case 'e': case 'g':
         case 'j': case 'k':
             intents.self_test = command;
             break;
@@ -175,6 +194,9 @@ static command_intents_t parse_commands(command_batch_t batch,
         case 'h': intents.help = true; break;
         case 'v': intents.enable_display = true; break;
         case 'p': intents.camera_view = true; break;
+        case 'u': intents.preview_enable = true; break;
+        case 'z': intents.preview_disable = true; break;
+        case 'b': intents.ball_approach = true; break;
         default: break;
         }
     }
@@ -183,11 +205,17 @@ static command_intents_t parse_commands(command_batch_t batch,
         intents.boot = false;
         intents.motion = 0;
         intents.self_test = 0;
+        intents.ball_approach = false;
     } else if (intents.force_auto) {
         intents.boot = false;
         intents.motion = 0;
         intents.self_test = 0;
+        intents.ball_approach = false;
     } else if (intents.boot) {
+        intents.motion = 0;
+        intents.self_test = 0;
+        intents.ball_approach = false;
+    } else if (intents.ball_approach) {
         intents.motion = 0;
         intents.self_test = 0;
     }
@@ -208,13 +236,39 @@ static motor_command_t manual_for(char command, int speed)
     }
 }
 
+static void start_ball_approach(app_controller_t *controller,
+                                int64_t now_us)
+{
+    if (controller->mode != APP_MODE_IDLE ||
+        controller->fault_bitmap != 0 || !controller->latest_camera.fresh) {
+        publish_event(controller, DIAGNOSTIC_EVENT_BALL_APPROACH,
+                      ESP_ERR_INVALID_STATE, 0,
+                      controller->mode != APP_MODE_IDLE ?
+                          "ball_start_requires_idle" :
+                      controller->fault_bitmap != 0 ?
+                          "ball_start_fault" : "ball_camera_not_ready",
+                      now_us);
+        return;
+    }
+    controller->manual_command = motor_command_zero();
+    controller->self_test = (self_test_t) {0};
+    line_follow_suspend(&controller->line_follow);
+    ball_approach_start(&controller->ball_approach, now_us);
+    ultrasonic_restart_session(&controller->ultrasonic, now_us);
+    controller->mode = APP_MODE_BALL_APPROACH;
+    publish_event(controller, DIAGNOSTIC_EVENT_MODE,
+                  APP_MODE_BALL_APPROACH, 0,
+                  "ball_approach_start", now_us);
+    enable_status_display(controller);
+}
+
 static void start_self_test(app_controller_t *controller, char command,
                             int64_t now_us)
 {
     controller->mode = APP_MODE_SELF_TEST;
     controller->self_test.phase = 0;
     controller->self_test.command = command;
-    if (command == 't') {
+    if (command == 't' || command == 'y') {
         controller->self_test.kind = SELF_TEST_DIRECT_TURN;
         controller->self_test.deadline_us = now_us + 100000;
     } else if (command == 'q' || command == 'e') {
@@ -279,14 +333,16 @@ static motor_command_t self_test_step(app_controller_t *controller,
     }
     if (controller->self_test.kind == SELF_TEST_DIRECT_TURN) {
         if (now_us >= controller->self_test.deadline_us) {
+            const char command = controller->self_test.command;
             controller->self_test = (self_test_t) {0};
             controller->mode = APP_MODE_IDLE;
             publish_event(controller, DIAGNOSTIC_EVENT_SELF_TEST,
-                          't', 0, "self_test_complete", now_us);
+                          command, 0, "self_test_complete", now_us);
             return motor_command_zero();
         }
+        const int direction = controller->self_test.command == 'y' ? -1 : 1;
         return kiwi_inverse_kinematics(
-            (body_motion_command_t) {.clockwise = 420},
+            (body_motion_command_t) {.clockwise = direction * 420},
             &controller->config->kinematics);
     }
     static const motor_command_t commands[] = {
@@ -322,13 +378,24 @@ static void apply_intents(app_controller_t *controller,
     if (intents.help) {
         publish_event(controller, DIAGNOSTIC_EVENT_INFO, 0,
                       controller->speed,
-                      "q/e strafe; g forward; p camera view; v display; x stop",
+                      "b ball approach; u/z preview; p view; x stop",
+                      now_us);
+    }
+    if (intents.preview_enable || intents.preview_disable) {
+        const bool enabled = intents.preview_enable &&
+                             !intents.preview_disable;
+        camera_line_sensor_set_usb_preview(&controller->camera_line, enabled);
+        diagnostics_request_usb_preview(&controller->diagnostics, enabled);
+        publish_event(controller, DIAGNOSTIC_EVENT_INFO,
+                      enabled ? 1 : 0, 0,
+                      enabled ? "usb_preview_enabled" :
+                                "usb_preview_disabled",
                       now_us);
     }
     if (intents.camera_view) {
         const bool safe_to_dump = controller->mode == APP_MODE_IDLE &&
             !intents.force_auto && !intents.boot && !intents.motion &&
-            !intents.self_test;
+            !intents.self_test && !intents.ball_approach;
         const bool accepted = safe_to_dump &&
             camera_line_sensor_request_ascii_view(&controller->camera_line);
         publish_event(controller, DIAGNOSTIC_EVENT_INFO,
@@ -345,6 +412,7 @@ static void apply_intents(app_controller_t *controller,
                            APP_MODE_IDLE : APP_MODE_FAULT;
         controller->manual_command = motor_command_zero();
         controller->self_test = (self_test_t) {0};
+        ball_approach_reset(&controller->ball_approach);
         publish_event(controller, DIAGNOSTIC_EVENT_STOP, 0, 0,
                       "stop", now_us);
         return;
@@ -353,12 +421,16 @@ static void apply_intents(app_controller_t *controller,
         start_autonomy(controller, now_us, true);
     } else if (intents.boot) {
         start_autonomy(controller, now_us, false);
+    } else if (intents.ball_approach && controller->fault_bitmap == 0) {
+        start_ball_approach(controller, now_us);
     } else if (intents.motion && controller->fault_bitmap == 0) {
         controller->mode = APP_MODE_MANUAL;
         controller->self_test = (self_test_t) {0};
+        ball_approach_reset(&controller->ball_approach);
         controller->manual_command = manual_for(intents.motion,
                                                 controller->speed);
     } else if (intents.self_test && controller->fault_bitmap == 0) {
+        ball_approach_reset(&controller->ball_approach);
         start_self_test(controller, intents.self_test, now_us);
     }
 }
@@ -377,6 +449,13 @@ static void publish_snapshot(app_controller_t *controller, int64_t now_us)
         .mode = controller->mode,
         .obstacle_state = controller->obstacle.state,
         .obstacle_clear_count = controller->obstacle.clear_count,
+        .startup_maneuver_phase = controller->startup_maneuver.phase,
+        .ball_approach_state = controller->ball_approach.state,
+        .ball_approach_reason = controller->ball_approach.last_reason,
+        .ball_capture_frames = controller->ball_approach.capture_frames,
+        .ball_goal_frames = controller->ball_approach.goal_frames,
+        .ball_approach_error =
+            controller->ball_approach.last_error_permille,
         .line = controller->latest_line,
         .camera = controller->latest_camera,
         .line_pattern = controller->line_follow.pattern,
@@ -411,9 +490,13 @@ static void publish_snapshot(app_controller_t *controller, int64_t now_us)
             .ultrasonic_mm = snapshot.ultrasonic.filtered_mm,
             .motor = snapshot.motor,
             .finished = controller->obstacle.state ==
-                        OBSTACLE_STATE_FINISHED,
+                        OBSTACLE_STATE_FINISHED ||
+                        controller->ball_approach.state ==
+                            BALL_APPROACH_STATE_DONE,
             .failsafe = controller->obstacle.state ==
-                        OBSTACLE_STATE_FAILSAFE,
+                        OBSTACLE_STATE_FAILSAFE ||
+                        controller->ball_approach.state ==
+                            BALL_APPROACH_STATE_FAILSAFE,
         };
         status_display_publish(&controller->display, &display_snapshot);
     }
@@ -441,7 +524,12 @@ static void controller_step(app_controller_t *controller, int64_t now_us)
                   parse_commands(batch, boot_event),
                   now_us);
 
+    const bool autonomous_needs_camera =
+        controller->obstacle.state == OBSTACLE_STATE_SENSOR_CHECK ||
+        controller->obstacle.state == OBSTACLE_STATE_CLEAR ||
+        controller->obstacle.state == OBSTACLE_STATE_WAIT_CLEAR;
     if (controller->mode == APP_MODE_AUTONOMOUS &&
+        autonomous_needs_camera &&
         !controller->latest_camera.fresh &&
         !controller->faults[FAULT_SOURCE_CAMERA].active) {
         set_fault(controller, FAULT_SOURCE_CAMERA, ESP_ERR_TIMEOUT,
@@ -453,14 +541,25 @@ static void controller_step(app_controller_t *controller, int64_t now_us)
         final_command = controller->manual_command;
     } else if (controller->mode == APP_MODE_SELF_TEST) {
         final_command = self_test_step(controller, now_us);
+    } else if (controller->mode == APP_MODE_BALL_APPROACH) {
+        const ball_approach_decision_t ball_decision =
+            ball_approach_step(&controller->ball_approach,
+                               &controller->latest_camera, now_us);
+        final_command = ball_decision.command;
+        if (ball_decision.transitioned) {
+            publish_event(controller, DIAGNOSTIC_EVENT_BALL_APPROACH,
+                          ball_decision.state, ball_decision.reason,
+                          ball_approach_state_name(ball_decision.state),
+                          now_us);
+        }
     } else if (controller->mode == APP_MODE_AUTONOMOUS) {
         const obstacle_decision_t decision = obstacle_supervisor_step(
             &controller->obstacle,
             has_ultrasonic_event ? &ultrasonic_event : NULL,
-            controller->latest_line, now_us);
+            now_us);
         /* Camera-shape finish recognition is intentionally dormant.  The
-         * obstacle supervisor now owns completion: after line recovery it
-         * follows the line for a fixed 1000 ms and then latches FINISHED. */
+         * obstacle supervisor owns completion: after the full right strafe
+         * it drives straight for 525 ms and then latches FINISHED. */
         if (decision.transition != OBSTACLE_TRANSITION_NONE) {
             publish_event(controller, DIAGNOSTIC_EVENT_OBSTACLE,
                           decision.transition, decision.reason,
@@ -473,13 +572,33 @@ static void controller_step(app_controller_t *controller, int64_t now_us)
             line_follow_resume(&controller->line_follow);
         }
         if (decision.policy == MOTION_POLICY_LINE_FOLLOW) {
-            final_command = line_follow_step_camera(
-                &controller->line_follow,
-                controller->latest_line,
-                controller->latest_camera.line_detected,
-                controller->latest_camera.steering_permille,
-                controller->latest_camera.decoded_frames,
-                controller->speed, now_us);
+            if (!startup_maneuver_is_complete(
+                    &controller->startup_maneuver)) {
+                const startup_maneuver_decision_t startup =
+                    startup_maneuver_step(
+                        &controller->startup_maneuver, now_us);
+                publish_startup_transition(controller, startup, now_us);
+                if (startup.complete) {
+                    /* Discard the pre-turn camera/direction history.  Normal
+                     * line following begins from the image seen after the
+                     * car has stopped at its new heading. */
+                    line_follow_reset_for_start(
+                        &controller->line_follow,
+                        controller->latest_line);
+                } else {
+                    final_command = kiwi_inverse_kinematics(
+                        startup.motion,
+                        &controller->config->kinematics);
+                }
+            } else {
+                final_command = line_follow_step_camera(
+                    &controller->line_follow,
+                    controller->latest_line,
+                    controller->latest_camera.line_detected,
+                    controller->latest_camera.steering_permille,
+                    controller->latest_camera.decoded_frames,
+                    controller->speed, now_us);
+            }
         } else if (decision.policy == MOTION_POLICY_OVERRIDE) {
             final_command = kiwi_inverse_kinematics(
                 decision.override_motion,
@@ -577,7 +696,12 @@ bool app_controller_init(app_controller_t *controller,
     }
     result = camera_line_sensor_init(&controller->camera_line,
                                      &config->camera_line,
-                                     &config->camera_ball);
+                                     &config->camera_ball,
+                                     controller->diagnostics_ready ?
+                                         diagnostics_write_camera_preview :
+                                         NULL,
+                                     controller->diagnostics_ready ?
+                                         &controller->diagnostics : NULL);
     if (result != ESP_OK) {
         set_fault(controller, FAULT_SOURCE_CAMERA, result,
                   FAULT_UNRECOVERABLE_THIS_BOOT);
@@ -615,6 +739,11 @@ bool app_controller_init(app_controller_t *controller,
     controller->button_ready = true;
     line_follow_init(&controller->line_follow, &config->line);
     obstacle_supervisor_init(&controller->obstacle, &config->obstacle);
+    startup_maneuver_init(&controller->startup_maneuver,
+                          &config->startup_maneuver);
+    ball_approach_init(&controller->ball_approach,
+                       &config->ball_approach,
+                       &config->kinematics);
     controller->latest_camera = camera_line_sensor_snapshot(
         &controller->camera_line, esp_timer_get_time());
     controller->latest_line = controller->latest_camera.virtual_sensors;

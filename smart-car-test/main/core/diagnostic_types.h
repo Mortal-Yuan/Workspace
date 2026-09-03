@@ -12,6 +12,7 @@ typedef enum {
     DIAGNOSTIC_EVENT_OBSTACLE,
     DIAGNOSTIC_EVENT_STOP,
     DIAGNOSTIC_EVENT_SELF_TEST,
+    DIAGNOSTIC_EVENT_BALL_APPROACH,
     DIAGNOSTIC_EVENT_INFO,
 } diagnostic_event_kind_t;
 
@@ -28,6 +29,12 @@ typedef struct {
     app_mode_t mode;
     uint8_t obstacle_state;
     uint8_t obstacle_clear_count;
+    uint8_t startup_maneuver_phase;
+    uint8_t ball_approach_state;
+    uint8_t ball_approach_reason;
+    uint8_t ball_capture_frames;
+    uint8_t ball_goal_frames;
+    int16_t ball_approach_error;
     line_sensor_sample_t line;
     camera_line_snapshot_t camera;
     uint8_t line_pattern;

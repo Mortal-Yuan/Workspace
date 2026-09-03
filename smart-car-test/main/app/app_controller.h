@@ -5,6 +5,7 @@
 
 #include "app_config.h"
 #include "app_events.h"
+#include "ball_approach.h"
 #include "camera_line_sensor.h"
 #include "diagnostics.h"
 #include "encoder.h"
@@ -13,6 +14,7 @@
 #include "obstacle_supervisor.h"
 #include "start_button.h"
 #include "status_display.h"
+#include "startup_maneuver.h"
 #include "ultrasonic.h"
 
 #define APP_CONTROL_TASK_STACK 6144
@@ -45,6 +47,8 @@ typedef struct {
     start_button_t button;
     line_follow_t line_follow;
     obstacle_supervisor_t obstacle;
+    startup_maneuver_t startup_maneuver;
+    ball_approach_t ball_approach;
     diagnostics_t diagnostics;
     status_display_t display;
     camera_line_snapshot_t latest_camera;

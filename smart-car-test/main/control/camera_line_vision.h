@@ -28,6 +28,10 @@ typedef struct {
     /* Near and far centers describe one accepted 8-connected component. */
     int16_t center_permille;
     int16_t far_center_permille;
+    /* Retained only for the newer diagnostic preview packet ABI.  The 9.1
+     * line-selection algorithm does not consume these telemetry fields. */
+    uint16_t center_y_permille;
+    uint16_t far_center_y_permille;
     int16_t heading_permille;
     int16_t steering_permille;
     uint16_t width_permille;

@@ -3,3 +3,6 @@ managed_components/
 sdkconfig
 sdkconfig.old
 .vscode/
+__pycache__/
+*.py[cod]
+参考文件/

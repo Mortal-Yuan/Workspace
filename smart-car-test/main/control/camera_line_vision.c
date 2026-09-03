@@ -4,8 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define CAMERA_LINE_MAX_ANALYSIS_WIDTH 160
-
 enum {
     /* This floor keeps component area meaningful even for a perfect history
      * match.  History changes ranking smoothly; it never rejects a jump. */
@@ -170,7 +168,6 @@ static camera_line_analysis_t camera_line_analyze_rgb888_internal(
     camera_line_analysis_t result = {0};
     if (pixels == NULL || config == NULL || workspace == NULL ||
         width < 16 || height < 16 ||
-        width > CAMERA_LINE_MAX_ANALYSIS_WIDTH ||
         height > CAMERA_LINE_VISION_MAX_HEIGHT ||
         config->roi_left_permille < 0 ||
         config->roi_right_permille > 1000 ||

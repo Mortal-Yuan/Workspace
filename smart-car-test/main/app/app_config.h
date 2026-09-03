@@ -6,9 +6,11 @@
 
 typedef struct {
     kiwi_kinematics_config_t kinematics;
+    startup_maneuver_config_t startup_maneuver;
     line_follow_config_t line;
     camera_line_config_t camera_line;
     camera_ball_config_t camera_ball;
+    ball_approach_config_t ball_approach;
     ultrasonic_config_t ultrasonic;
     obstacle_config_t obstacle;
     start_button_config_t button;
