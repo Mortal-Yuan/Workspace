@@ -62,6 +62,7 @@ typedef struct {
     int16_t history_center_permille;
     int16_t history_steering_permille;
     camera_target_tracker_t red_tracker;
+    camera_target_tracker_t green_tracker;
     camera_target_tracker_t left_target_tracker;
     camera_target_tracker_t right_target_tracker;
     bool ascii_view_requested;

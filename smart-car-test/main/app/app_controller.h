@@ -6,6 +6,7 @@
 #include "app_config.h"
 #include "app_events.h"
 #include "ball_approach.h"
+#include "ball_mission.h"
 #include "camera_line_sensor.h"
 #include "diagnostics.h"
 #include "encoder.h"
@@ -49,6 +50,7 @@ typedef struct {
     obstacle_supervisor_t obstacle;
     startup_maneuver_t startup_maneuver;
     ball_approach_t ball_approach;
+    ball_mission_t ball_mission;
     diagnostics_t diagnostics;
     status_display_t display;
     camera_line_snapshot_t latest_camera;

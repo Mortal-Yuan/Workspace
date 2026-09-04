@@ -23,6 +23,10 @@ static obstacle_transition_t transition_for(obstacle_state_t state)
         return OBSTACLE_TRANSITION_TO_BRAKE;
     case OBSTACLE_STATE_STRAFE_LEFT_DISTANCE:
         return OBSTACLE_TRANSITION_TO_STRAFE_LEFT_DISTANCE;
+    case OBSTACLE_STATE_SETTLE_LEFT_TRIM:
+        return OBSTACLE_TRANSITION_TO_SETTLE_LEFT_TRIM;
+    case OBSTACLE_STATE_LEFT_HEADING_TRIM:
+        return OBSTACLE_TRANSITION_TO_LEFT_HEADING_TRIM;
     case OBSTACLE_STATE_SETTLE_FORWARD:
         return OBSTACLE_TRANSITION_TO_SETTLE_FORWARD;
     case OBSTACLE_STATE_FORWARD_DISTANCE:
@@ -113,6 +117,7 @@ static void count_clear(obstacle_supervisor_t *supervisor,
 static bool maneuver_state(obstacle_state_t state)
 {
     return state == OBSTACLE_STATE_STRAFE_LEFT_DISTANCE ||
+           state == OBSTACLE_STATE_LEFT_HEADING_TRIM ||
            state == OBSTACLE_STATE_FORWARD_DISTANCE ||
            state == OBSTACLE_STATE_STRAFE_RIGHT_DISTANCE ||
            state == OBSTACLE_STATE_POST_BYPASS_FORWARD;
@@ -145,6 +150,11 @@ static void apply_policy(const obstacle_supervisor_t *supervisor,
                 supervisor->config.lateral_speed;
         decision->policy = MOTION_POLICY_OVERRIDE;
         decision->override_motion.left = (int16_t)speed;
+        break;
+    case OBSTACLE_STATE_LEFT_HEADING_TRIM:
+        decision->policy = MOTION_POLICY_OVERRIDE;
+        decision->override_motion.clockwise =
+            (int16_t)-supervisor->config.left_heading_trim_speed;
         break;
     case OBSTACLE_STATE_FORWARD_DISTANCE:
     case OBSTACLE_STATE_POST_BYPASS_FORWARD:
@@ -278,6 +288,23 @@ obstacle_decision_t obstacle_supervisor_step(
     case OBSTACLE_STATE_STRAFE_LEFT_DISTANCE:
         if (elapsed_us >= supervisor->config.left_strafe_ms * 1000LL) {
             enter_state(supervisor, &decision,
+                        OBSTACLE_STATE_SETTLE_LEFT_TRIM,
+                        OBSTACLE_REASON_SEGMENT_COMPLETE, now_us);
+        }
+        break;
+
+    case OBSTACLE_STATE_SETTLE_LEFT_TRIM:
+        if (elapsed_us >= supervisor->config.brake_ms * 1000LL) {
+            enter_state(supervisor, &decision,
+                        OBSTACLE_STATE_LEFT_HEADING_TRIM,
+                        OBSTACLE_REASON_BRAKE_COMPLETE, now_us);
+        }
+        break;
+
+    case OBSTACLE_STATE_LEFT_HEADING_TRIM:
+        if (elapsed_us >=
+            supervisor->config.left_heading_trim_ms * 1000LL) {
+            enter_state(supervisor, &decision,
                         OBSTACLE_STATE_SETTLE_FORWARD,
                         OBSTACLE_REASON_SEGMENT_COMPLETE, now_us);
         }
@@ -356,6 +383,8 @@ const char *obstacle_state_name(obstacle_state_t state)
     case OBSTACLE_STATE_WAIT_CLEAR: return "WAIT_CLEAR";
     case OBSTACLE_STATE_BRAKE: return "BRAKE";
     case OBSTACLE_STATE_STRAFE_LEFT_DISTANCE: return "LEFT_STRAFE";
+    case OBSTACLE_STATE_SETTLE_LEFT_TRIM: return "SETTLE_LEFT_TRIM";
+    case OBSTACLE_STATE_LEFT_HEADING_TRIM: return "LEFT_HEADING_TRIM";
     case OBSTACLE_STATE_SETTLE_FORWARD: return "SETTLE_FORWARD";
     case OBSTACLE_STATE_FORWARD_DISTANCE: return "FORWARD_TIMED";
     case OBSTACLE_STATE_SETTLE_RIGHT: return "SETTLE_RIGHT";

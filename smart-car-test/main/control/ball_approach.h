@@ -53,12 +53,17 @@ typedef enum {
     BALL_APPROACH_REASON_PUSH_STARTED,
     BALL_APPROACH_REASON_GOAL_SEEN,
     BALL_APPROACH_REASON_GOAL_REACHED,
+    BALL_APPROACH_REASON_GOAL_OCCLUDED,
     BALL_APPROACH_REASON_CAMERA_STALE,
     BALL_APPROACH_REASON_ACQUIRE_TIMEOUT,
-    BALL_APPROACH_REASON_APPROACH_TIMEOUT,
     BALL_APPROACH_REASON_PUSH_TIMEOUT,
     BALL_APPROACH_REASON_TOTAL_TIMEOUT,
 } ball_approach_reason_t;
+
+typedef enum {
+    BALL_GOAL_PREFERENCE_LEFT,
+    BALL_GOAL_PREFERENCE_RIGHT,
+} ball_goal_preference_t;
 
 typedef struct {
     motor_command_t command;
@@ -84,6 +89,8 @@ typedef struct {
     uint8_t capture_frames;
     uint8_t capture_samples;
     uint8_t goal_frames;
+    uint16_t capture_reference_y_permille;
+    uint16_t post_capture_min_y_permille;
     uint16_t search_motion_ms;
     int8_t turn_direction;
     int64_t run_started_us;
@@ -94,6 +101,9 @@ typedef struct {
     int64_t push_motion_started_us;
     bool route_completed;
     bool goal_preference_locked;
+    ball_color_t target_color;
+    ball_goal_preference_t goal_preference;
+    ball_approach_state_t initial_search_state;
     bool initialized;
 } ball_approach_t;
 
@@ -102,6 +112,10 @@ void ball_approach_init(ball_approach_t *controller,
                         const kiwi_kinematics_config_t *kinematics_config);
 void ball_approach_reset(ball_approach_t *controller);
 void ball_approach_start(ball_approach_t *controller, int64_t now_us);
+void ball_approach_start_for(ball_approach_t *controller,
+                             ball_color_t target_color,
+                             ball_goal_preference_t goal_preference,
+                             int64_t now_us);
 ball_approach_decision_t ball_approach_step(
     ball_approach_t *controller, const camera_line_snapshot_t *camera,
     int64_t now_us);

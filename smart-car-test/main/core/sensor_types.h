@@ -80,10 +80,11 @@ typedef struct {
     uint8_t connected_component_count;
     uint8_t threshold;
     uint8_t contrast;
-    /* ball is the red object to collect.  Blue components remain separated
-     * by image side for detection and display, but ball control consumes
-     * them as an unordered set and remembers the first confirmed target. */
+    /* ball is the red object to collect first; green_ball is independently
+     * tracked for the second delivery. Blue components remain separated by
+     * image side for detection and display. */
     camera_ball_observation_t ball;
+    camera_ball_observation_t green_ball;
     camera_ball_observation_t left_target;
     camera_ball_observation_t right_target;
     uint32_t received_frames;

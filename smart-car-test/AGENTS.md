@@ -96,8 +96,8 @@ dependency and extension contracts.
   `L/LC/RC/R` weights `-6/-2/+2/+6`, divides by the active-sensor count, and
   applies `correction=clamp(error*120,-300,300)` to
   `A=-base+correction, B=0, C=-base-correction`.
-- Camera line bases/limits are straight 348, ordinary curve 276/384,
-  one-sided edge 233/336, and no-line search 211. Normal driving bases, curve
+- Camera line bases/limits are straight 348, ordinary curve 276/420,
+  one-sided edge 233/400, and no-line search 211. Normal driving bases, curve
   and edge limits, proportional gain, and maximum correction are 20% above the
   preceding 290/230/194, 320/280, 100, and 250 settings (rounded to integers).
   This scales normal steering commands without flattening their differential;
@@ -154,11 +154,11 @@ dependency and extension contracts.
 - `+` and `-` adjust speed.
 - USB Host receives 640x480 MJPEG at 15 fps. The newest source has been restored
   to `JPEG_IMAGE_SCALE_1_8`, decoding an 80x60 RGB888 frame. The full decoded
-  frame reaches ball vision, while its lower 80x30 half
-  reaches the line-vision entry point. The line task still applies its existing
-  central ROI after that crop.
+  frame reaches both ball vision and the line-vision entry point.
   The active native-view ROI uses the central horizontal span
-  `x=25%..75%` while retaining `y=60%..93%`. Horizontal coordinates, component
+  `x=25%..75%` and `y=46.7%..79.7%`, which is exactly `y=28..46` at 80x60
+  and preserves the former 19-row height after an eight-pixel upward shift.
+  Horizontal coordinates, component
   width, and component area use the calibrated 1x logical scale. The dark
   histogram percentile is 2% for the restored central-width background. The
   adaptive black threshold uses the 9.1 formula
@@ -252,9 +252,10 @@ dependency and extension contracts.
   immediately when the red center enters the blue box plus a 60-permille
   margin. A second stationary overlap frame latches completion. This remains
   separate from the main course sequence.
-- Camera vision analyzes the native view's central near-track window
-  (`x=25%..75%`, `y=60%..93%`). Pixels outside that horizontal window are not
-  included in the histogram, connected components, or line tracking. The
+- Camera vision analyzes the native view's central track window
+  (`x=25%..75%`, `y=46.7%..79.7%`; rows 28 through 46 at 80x60). Pixels
+  outside that horizontal window are not included in the histogram, connected
+  components, or line tracking. The
   current geometric-center calibration uses a
   -165 permille installation offset. After reflashing, a 20-second stationary
   run reported `pos=-41..-39`, `steer=-54..-53`, always `0110`, with no camera
@@ -271,30 +272,37 @@ dependency and extension contracts.
   completed pulse above 4000 mm is reported as `NO_RETURN` (`q=5`). Completed
   no-return pulses, low-Echo timeouts, and clean far-distance `OUTLIER` jumps
   are treated as normal open space both during startup authorization and after
-  entering `CLEAR`. In active line following, the 20--80 mm raw-distance
+  entering `CLEAR`. In active line following, the 20--110 mm raw-distance
   test is the only ultrasonic condition allowed to interrupt `CLEAR`; even an
   Echo-high or malformed-edge diagnostic does not alter the line policy.
   Automatic bypass
   is enabled for bounded field calibration. The first raw Echo from 20 through
-  80 mm stops immediately, then the active sequence is `BRAKE -> LEFT_STRAFE
-  -> SETTLE_FORWARD -> FORWARD_TIMED -> SETTLE_RIGHT -> RIGHT_RAMP ->
+  110 mm stops immediately, then the active sequence is `BRAKE -> LEFT_STRAFE
+  -> SETTLE_LEFT_TRIM -> LEFT_HEADING_TRIM -> SETTLE_FORWARD -> FORWARD_TIMED
+  -> SETTLE_RIGHT -> RIGHT_RAMP ->
   FINAL_FORWARD_525MS -> FINISHED`. The experimental camera-heading alignment state and all its
   configuration were removed after the live 2026-09-01 test turned once and
   ended in latched `FAILSAFE`. `BRAKE` now transitions directly to left strafe
   after 150 ms. Because encoder interference is not yet filtered, the distance segments
-  are scaled open-loop times: left 1030 ms, forward 1074 ms, and right 1097 ms.
+  are scaled open-loop times: left 1468 ms, forward 1243 ms, and right 625 ms.
   Left retains its 380/500 steady/start-boost body commands and forward remains
-  at 400/500 commands. Right strafe now starts at the lowest effective body
+  at 400/500 commands. The initial 150 ms brake transitions directly to left
+  strafe with no entry heading trim. After left strafe, the controller stops for
+  150 ms, applies a fixed 460-command counter-clockwise yaw trim for 60 ms
+  (`A/B/C=-460/+460/+460`), and stops for another 150 ms before forward motion.
+  This bounded open-loop trim counters the observed clockwise tyre slip; it is
+  not the removed camera-heading alignment feature. Right strafe now starts at the lowest effective body
   command 300 and linearly accelerates to 380 over 400 ms instead of applying
   the old 500-command launch boost. A right-launch-only counter-clockwise body
   command now fades from -60 to zero over the same 400 ms. This raises the
   dead-zone-clamped launch vector from `+300/+460/-300` to
   `+300/+510/-300`, reaches about `+300/+540/-300` halfway, and leaves the
-  proven `+300/+570/-300` steady vector unchanged. The 1097 ms maximum approximately preserves
-  the previous motion-command integral after introducing the ramp. The obstacle
-  trigger is now 80 mm, 20 mm farther than the preceding 60 mm setting. All segments still
+  proven `+300/+570/-300` steady vector unchanged. The right duration was reduced
+  by 40% from 1042 to 625 ms after the ground test showed excess displacement;
+  the acceleration and yaw-compensation profiles are unchanged. The obstacle
+  trigger is now 110 mm, 30 mm farther than the preceding 80 mm setting. All segments still
   require ruler calibration.
-  The right segment now always completes its full 1097 ms. Line samples are
+  The right segment now always completes its full 625 ms. Line samples are
   ignored after `BRAKE`; there is no early black-line stop, `LINE_CONFIRM`, or
   return to line following. The following 525 ms is a fixed straight override
   using the same 500/400 start/steady forward commands, after which the car
@@ -307,7 +315,7 @@ dependency and extension contracts.
   counts, matching the mostly open competition course. Echo-high, malformed,
   or electrically uncertain samples never authorize startup. After entering
   normal `CLEAR` line following,
-  every ultrasonic result other than a raw Echo from 20 through 80 mm is
+  every ultrasonic result other than a raw Echo from 20 through 110 mm is
   diagnostic-only and cannot stop or modify line following. Fixed-distance
   bypass segments do not interpret no-Echo as an obstacle-edge completion
   signal; repeated uncertainty during an already active bypass may still enter
@@ -324,11 +332,12 @@ dependency and extension contracts.
   inverse-kinematics module now derives candidate left strafe as
   `A=-0.866S, B=-S, C=+0.866S` before empirical dead-zone and yaw correction.
   B positive has a 460 minimum and pure lateral A/C have a 300 minimum. Yaw
-  compensation remains direction-specific: left is currently 55% clockwise to
-  remove slight counter-clockwise drift, while right remains 50%.
+  compensation remains direction-specific: a -20% left trial produced a
+  strong counter-clockwise circle and reduced B to a stall-prone -304, so left
+  now applies a moderate 20% clockwise correction; right remains 50%.
   At the 380 steady lateral command this produces
-  `A/B/C=-300/-589/+300` left and `+300/+570/-300` right; the 500 start
-  command produces `-300/-775/+300` and `+300/+750/-300`. Automatic bypass is enabled for bounded field
+  `A/B/C=-300/-456/+300` left and `+300/+570/-300` right; the 500 start
+  command produces `-333/-600/+333` and `+300/+750/-300`. Automatic bypass is enabled for bounded field
   calibration after `q/e` confirmed physical direction. `q/e` run for 1000 ms; `g` runs the verified
   forward basis at 400/1000 for 1000 ms for ruler calibration.
 
@@ -1155,6 +1164,464 @@ flashed regions passed independent readback verification.  A nine-second
 passive check remained `IDLE`, fresh, camera-error-free, and at `cmd=0,0,0`;
 no movement command was sent.
 
+The current eight-pixel-upward-ROI build changes the production line window
+from `y=36..54` to `y=28..46` in the decoded 80x60 frame while preserving its
+19-row height and `x=25%..75%` horizontal span.  Because the new top crosses
+the former lower-half boundary, line vision now receives the full decoded
+frame before applying the bounded ROI; red/blue full-frame detection is
+unchanged.  Host regression and the full ESP-IDF 5.4.4 build pass.  The
+0x5ec20-byte application SHA-256 is
+`A0734859DCC27513500BD7C488DF497720E02D473D77224F79FF667AD6B5D1F2`.
+COM3 was re-identified as the ESP32-S3 rev0.2 / 16 MB PSRAM target, and all
+three flashed regions passed write-time hash verification.  A nine-second
+passive check stayed `IDLE`, `fresh=1`, `cam_err=0`, `cmd=0,0,0`, and
+`encoder=0,0,0`; decoded sequence advanced from 82 to 190.  No movement
+command was sent, and the camera monitor was reopened for visual ROI checking.
+
+The superseded -20% left-strafe trial produced an obvious counter-clockwise
+circle and made lateral motion prone to stalling because B received only -304.
+The next build therefore uses +20% left compensation: body command 380 becomes
+`A/B/C=-300/-456/+300`, while the 500 start command becomes
+`-333/-600/+333`.  This restores B above its measured negative-direction
+breakaway level without returning to the excessive +55% clockwise correction.
+Right-strafe compensation and all motion durations remain unchanged.
+
+The current +20% left-strafe build supersedes that -20% trial.  It keeps B at
+-456 for the 380 steady command and -600 for the 500 start command, avoiding
+the observed stall-prone -304 while applying only a moderate clockwise yaw
+term.  Host regression and the full ESP-IDF 5.4.4 build pass.  The
+0x5ec20-byte application SHA-256 is
+`7A833C39B66F7B1749E1E15BB0A3488CBF6183F445714D1979B249BE7E685CD3`.
+COM3 was re-identified and all three flashed regions passed write-time hash
+verification.  A nine-second passive check remained `IDLE`, `fresh=1`,
+`cam_err=0`, `cmd=0,0,0`, and `encoder=0,0,0`; no movement command was sent.
+
+The current 2026-09-04 tuning extends obstacle left strafe from 1030 to 1545 ms
+(1.5x) and raises only the high-demand line-turn limits: curve maximum 384 to
+420 and edge maximum 336 to 400.  Straight/curve/edge base commands remain
+348/276/233.  Host regression and the full ESP-IDF 5.4.4 build pass.  The
+0x5ec20-byte application SHA-256 is
+`35534FD0EDBE5A604CB54B139C8B81F7CC781357AB1B136FE0C26FA84824E222`.
+Because the CP210x link dropped during long continuous transfers, COM3 was
+reconnected and the application was written as six aligned 64 KiB-or-smaller
+segments; bootloader, partition table, and every application segment passed
+write-time hash verification.  An 18-record, nine-second passive check remained
+`IDLE`, `fresh=1`, `cam_err=0`, and `cmd=0,0,0`, with live ultrasonic readings
+around 308--321 mm.  A/C encoder counts advanced rapidly at zero motor command,
+again confirming that the unfiltered encoder inputs remain electrically noisy.
+No movement command was sent.
+
+The subsequent field retune keeps the well-performing avoidance profile but
+shortens its left strafe by 5%, from 1545 to 1468 ms, and lengthens the middle
+forward segment by 5%, from 1074 to 1128 ms.  Right strafe, final forward,
+motion commands, line steering, and all safety gates are unchanged.  Host
+regression and the full ESP-IDF 5.4.4 build pass.  The 0x5ec20-byte application
+SHA-256 is
+`C04E74B980EA56E3D48F41AE0CD6B03B425662D8D20AFC5E3541966B333E889D`.
+COM3 was positively re-identified as the ESP32-S3 target; bootloader, partition
+table, and all six short application writes passed write-time hash verification.
+An 18-record, nine-second passive check stayed `IDLE`, `fresh=1`, `cam_err=0`,
+`cmd=0,0,0`, and `encoder=0,0,0`, with ultrasonic readings around 297--298 mm.
+No movement command was sent.
+
+The current left-heading-trim build addresses the observed final tyre slip that
+left the nose slightly clockwise after lateral motion.  It adds explicit
+`SETTLE_LEFT_TRIM` and `LEFT_HEADING_TRIM` states between left strafe and the
+existing forward settle: zero output for 150 ms, counter-clockwise body yaw 420
+for 40 ms, then zero output for another 150 ms.  The resulting wheel command is
+`A/B/C=-420/+460/+420`, including B's positive-direction dead-zone floor.  The
+trim is fixed and bounded; camera alignment remains removed.  Host regression
+checks both exact time boundaries, the motor vector, and config validation, and
+the full ESP-IDF 5.4.4 build passes.  The 0x5ed60-byte application SHA-256 is
+`0CA4A61BBA810244639608CD6788F25E16979D2E277B91374D6B63DF54DE7ECD`.
+COM3 was positively re-identified as the same ESP32-S3 target; bootloader,
+partition table, and all six short application writes passed write-time hash
+verification.  An 18-record, nine-second passive check remained `IDLE`,
+`fresh=1`, `cam_err=0`, `cmd=0,0,0`, and `encoder=0,0,0`, with ultrasonic
+readings around 363 mm.  No movement command was sent.
+
+The current avoidance retune completely removes the unflashed entry-heading
+trim experiment: after the initial 150 ms `BRAKE`, the controller again enters
+left strafe directly.  Only the post-strafe correction remains, strengthened
+from body yaw 420/40 ms to 460/60 ms; its wheel command is
+`A/B/C=-460/+460/+460`, bracketed by the existing 150 ms stops.  The middle
+forward segment also includes the requested 5% extension from 1128 to 1184 ms;
+left/right/final distances and all other commands are unchanged.  Host
+regression and the full ESP-IDF 5.4.4 build pass.  The 0x5ed60-byte application
+SHA-256 is
+`A52E71F0F6F29DC2BB725610D15639FE447D56C9E78E06EDA7F998D418E37BDF`.
+COM3 was positively re-identified as the same ESP32-S3 target; bootloader,
+partition table, and all six short application writes passed write-time hash
+verification.  An 18-record, nine-second passive check remained `IDLE`,
+`fresh=1`, `cam_err=0`, `cmd=0,0,0`, and `encoder=0,0,0`; ultrasonic data stayed
+live.  No movement command was sent.
+
+The current 2026-09-04 second-ball calibration replaces the visually ambiguous
+yellow ball with a green ball while leaving line following, avoidance, and all
+motor arbitration unchanged.  Green is analyzed independently from the red
+ball and the two blue targets.  The field sample is a dark cyan-green: its mean
+RGB was about 79--83/98--102/97--106, so the detector uses G>=55, G-R>=18,
+B-G<=20, a stronger-pixel gate of G>=75, and a three-frame confirmation.  The
+far-ball path admits a compact 4-pixel component when at least two pixels pass
+the strong gate, confidence is at least 650 permille, and roundness is at least
+400 permille.  With the green ball present, a 15-second passive capture remained
+confirmed (`GREEN=1/1/1`) with 4--8 matched pixels and confidence 872--900
+permille.  After the ball was removed, all 30 records in the next 15-second
+capture remained `GREEN=0/0/0/0`, with zero candidates and zero detections.
+Both captures stayed `IDLE`, `fresh=1`, `cam_err=0`, `cmd=0,0,0`, and encoder
+0/0/0.  Expanding diagnostics initially exposed a diagnostics-task stack
+overflow; increasing that task from 4096 to 6144 bytes removed the reboot, and
+the final passive checks showed no further boot or error record.  Host
+regression, monitor parser self-test, and the full ESP-IDF 5.4.4 build pass.  The
+0x5f460-byte application SHA-256 is
+`400EDC3D49D70C8E4E47EF9E0B400BAFD5C0DBAE3C1DFEB9CE73A72A57EAD7BD`.
+COM3 was positively re-identified as the ESP32-S3 target, and all six short
+application writes passed write-time hash verification.  No movement command
+was sent.  Green recognition is calibrated but is not yet connected to the
+planned red-left-goal then green-right-goal mission state machine.
+
+The subsequent 2026-09-04 two-ball build adds an explicit `n` mission while
+preserving standalone `b`, line following, and obstacle tuning.  The red phase
+starts with leftward search and ignores a right-slot blue goal until a left-slot
+goal has been confirmed; this permits the car to approach the red ball while
+the distant left goal is still hidden or only two pixels.  Once locked, goal
+tracking uses frame continuity across the image center.  Red completion resets
+the approach controller and holds zero output for 500 ms.  The green phase then
+selects `green_ball`, accepts the right-slot goal before lock, and starts the
+existing pulsed rightward search.  This is camera-guided rather than a new
+fixed-angle blind turn.  Green completion latches mission done at zero output;
+serial `x` still preempts every phase.  Host regression covers wrong-side goal
+rejection, green/right selection, the stationary inter-stage boundary, and
+terminal zero output.  Monitor syntax/parser tests and the full ESP-IDF 5.4.4
+build pass.  The 0x5fb90-byte application SHA-256 is
+`489442161A944E4D25B005BE0C2039E29BDCE5EE22337BA9C7C75E724089E081`.
+COM3 was re-identified as the same ESP32-S3 rev0.2 / 16 MB PSRAM / MAC
+`9c:cc:01:fb:8f:9c`; all six short application writes passed hash verification.
+A 25-record passive check remained `IDLE`, `mission=0`, `fresh=1`, `cam_err=0`,
+and `cmd=0,0,0`, with no reboot, stack overflow, or fault.  Red and the right
+blue goal remained confirmed; the four-pixel green ball briefly dropped
+confirmation but remained a candidate and automatically reconfirmed.  No
+movement command was sent.
+
+The current post-push occlusion build fixes the first full two-ball ground run:
+the red ball physically entered the left blue area, but disappeared below the
+camera/clip 740 ms after `BALL_PUSH`, so the former first-frame loss policy
+stopped and restarted red acquisition instead of advancing to green.  A loss is
+now accepted only after at least 600 ms of pushing, while the already locked
+blue goal remains detected and within the push realignment threshold.  Motion
+stops immediately and three fresh occluded frames are required before
+`BALL_DONE`; early loss, missing/misaligned blue, or a clearly detected ball
+outside the target still cannot complete delivery.  The mission then retains
+its 500 ms zero-output transition and starts the camera-guided rightward green
+search.  Line following and obstacle avoidance are unchanged.  Host regression,
+monitor syntax/parser tests, and the full ESP-IDF 5.4.4 build pass.  The
+0x5fce0-byte application SHA-256 is
+`EEB27F6F47329068546222AC34C351CC45B34877C89FA67D2320483965DE4C5A`.
+COM3 was positively re-identified as the same ESP32-S3 rev0.2 / 16 MB PSRAM /
+MAC `9c:cc:01:fb:8f:9c`; all six short application writes passed hash
+verification.  A 15-record passive startup check remained `IDLE`, `mission=0`,
+`ballctl=0`, `fresh=1` after camera startup, `cam_err=0`, and `cmd=0,0,0`.
+No motion command was sent after flashing.
+
+The current no-approach-timeout build follows the next physical observation:
+although the loaded car appeared stationary long enough to trigger the former
+12-second `BALL_APPROACH` timeout, it subsequently moved and successfully
+pushed the red ball.  The dedicated approach deadline, its configuration field,
+and its reason code have therefore been removed.  A fresh confirmed target now
+keeps approach active; camera-stale and ball-loss stops, the 10-second push
+limit, the 45-second bounded controller run/recovery cycle, total mission
+preemption, and serial `x` remain intact.  The qualified post-push occlusion
+completion and red-to-green transition are unchanged.  Host regression now
+holds a valid approach beyond 13 seconds and passes, as do monitor parsing and
+the full ESP-IDF 5.4.4 build.  The 0x5fc70-byte application SHA-256 is
+`4C67B4DFA1190B89B6EC15544468A35960E009DE99B293FA0F822E0F04B4A6D6`.
+COM3 was re-identified as ESP32-S3 rev0.2 / 16 MB PSRAM / MAC
+`9c:cc:01:fb:8f:9c`; all six short writes passed hash verification.  Fifteen
+passive status records remained `IDLE`, `mission=0`, `ballctl=0`, `fresh=1`,
+`cam_err=0`, and `cmd=0,0,0`, with no error record.  No motion command was sent.
+
+The current passive-guide roll-away build replaces the invalid assumption that
+the front hardware continuously clamps the ball.  In the latest ground run,
+contact was confirmed at red center-y 776; during lateral goal alignment the
+ball rolled forward through y=478, 355, and 325, then left recognition and was
+physically observed inside the left blue area, even though formal `BALL_PUSH`
+had not begun.  After confirmed contact, the controller now records the nearest
+forward ball position.  If it advances at least 200 permille, the locked blue
+goal is still detected, and the ball then becomes unconfirmed, all motion stops
+and three fresh occluded frames complete delivery.  The rule applies throughout
+post-capture goal alignment and pushing.  Loss before sufficient forward travel
+still enters recovery, and a clearly detected ball outside the goal cancels the
+occlusion confirmation and returns to alignment.  The red mission can therefore
+advance through its 500 ms stopped transition to rightward green search without
+requiring 600 ms of continuous pushing.  Host regression covers insufficient
+travel, successful pre-push roll-away, candidate-only occlusion, and visible
+outside-goal cancellation.  Monitor tests and the complete ESP-IDF 5.4.4 build
+pass.  The 0x5fcf0-byte application SHA-256 is
+`0A2941A0E3CF3A933C173326E16B5A9CF8DAA413EA077773CE840284C8E582C3`.
+COM3 was re-identified as the same ESP32-S3 rev0.2 / 16 MB PSRAM / MAC
+`9c:cc:01:fb:8f:9c`; all six short writes passed hash verification.  Fifteen
+passive startup records stayed `IDLE`, `mission=0`, `ballctl=0`, `fresh=1`,
+`cam_err=0`, and `cmd=0,0,0`, with no error.  No motion command was sent.
+
+The current released-contact calibration follows the next full ground test.
+The red ball was physically confirmed inside the left blue target, but the
+camera saw it only as near as center-y 648..663 with box bottoms around
+695..729 before it rolled forward through y=490 and 372 and disappeared.  The
+former center-y 760 / bottom 850 contact gate therefore never armed, so the
+controller incorrectly resumed red search.  Contact verification now begins
+at center-y 600 and box bottom 680, still requiring adequate blob size,
+horizontal alignment, two distinct frames, a locked goal, a later 200-permille
+forward roll, and three stopped occluded frames.  Near approach deceleration
+moves from y=700 to y=580 so the chassis slows before this earlier passive-guide
+contact band.  Host regression includes the last pre-contact y=537 sample and
+the live 651 -> 630 two-frame contact sequence.  Line following and obstacle
+avoidance are unchanged.  Host regression, monitor syntax/parser tests, and the
+full ESP-IDF build pass.  The 0x5fcf0-byte application SHA-256 is
+`DBD2D85F43D6FDEC32E2A9E974D8B724FE7964F6B64A5EB687FF5938410D45FF`.
+COM3 was positively re-identified as ESP32-S3 rev0.2 with 16 MB PSRAM, 32 MB
+flash, and MAC `9c:cc:01:fb:8f:9c`; all six short application writes passed
+write-time hash verification.  Twenty passive startup records reported no
+errors and remained `IDLE`, `mission=0`, `ballctl=0`, `fresh=1`, `cam_err=0`,
+`cmd=0,0,0`, and encoder `0,0,0`.  No motion command was sent after flashing.
+
+The current fixed-kick build simplifies both delivery phases after the next
+field failure.  Contact and requested-blue-goal alignment remain camera guided:
+two contact frames are followed by target search/lateral correction, and three
+aligned target frames authorize motion.  `BALL_PUSH` is now a single straight
+500/1000 command lasting exactly 500 ms.  Once that bounded pulse begins it
+ignores camera freshness, ball visibility, target visibility, overlap, and
+roll-away observations; the 500 ms boundary stops the motors and directly sets
+`BALL_DONE`.  Red therefore enters the existing 500 ms stationary mission
+transition and then rightward green search, while green uses the identical kick
+and finishes the mission.  Loss before kick authorization and alignment/run
+timeouts retain their stationary recovery behavior.  Line following and
+obstacle avoidance are unchanged.  Host regression covers the exact 499/500 ms
+boundary and complete camera/ball/goal loss during the kick.  Host tests,
+monitor syntax/parser tests, and the full ESP-IDF 5.4.4 build pass.  The
+0x5f990-byte application SHA-256 is
+`2AAFAFD54EA403D95A31C146420A0865F36CF9E4A4EC66D70383657E73686133`.
+COM3 was positively re-identified as the same ESP32-S3 rev0.2 / 16 MB PSRAM /
+MAC `9c:cc:01:fb:8f:9c`; bootloader, partition table, and all six short
+application writes passed hash verification.  A 12-second passive check stayed
+`IDLE`, `mission=0`, `ballctl=0`, `fresh=1`, `cmd=0,0,0`, and encoder `0,0,0`.
+One camera transfer error had accumulated before the observation window, but no
+new error/fault record appeared and freshness remained continuous.  A separate
+six-second preview probe passed with 25 frames, 12 status records, and zero CRC
+errors.  No motion command was sent after flashing; floor behavior remains to
+be tested.
+
+The preceding 120-degree green-entry-turn build follows the first fixed-kick ground run.
+The red 500 ms kick completed correctly and the mission advanced to its green
+phase, but the rotating visual search repeatedly saw unstable green background
+components and the MCU later reset before a stable green approach.  After red
+completion, the mission now holds zero output for 500 ms, applies the verified
+clockwise pure-yaw wheel vector `A/B/C=+420/-420/-420` for 400 ms (the existing
+open-loop estimate for about 120 degrees), holds zero for another 300 ms, and
+only then starts the camera-guided green/right-goal controller.  The new turn
+and settle states were appended after the existing enum values, preserving
+`DONE=4` and `FAILSAFE=5` for host safety handling.  The red/green camera
+alignment and identical fixed-kick logic, line following, and obstacle
+avoidance are unchanged.  Host boundary regression, monitor syntax/parser
+tests, and the complete ESP-IDF 5.4.4 build pass.  The 0x5fb60-byte application
+SHA-256 is
+`07DFCFBEC0EA2050C05699F65FD9102E011BF529A4196B18288967F06CF3413B`.
+COM3 was positively re-identified as the same ESP32-S3 rev0.2 / 16 MB PSRAM /
+32 MB flash / MAC `9c:cc:01:fb:8f:9c`; bootloader, partition table, and all six
+short application writes passed hash verification.  Twenty-four passive
+records over 12 seconds remained `IDLE`, `mission=0`, `ballctl=0`, `fresh=1`,
+`cam_err=0`, `cmd=0,0,0`, and encoder `0,0,0`.  No motion command was sent;
+the approximate 120-degree loaded-floor angle still requires physical
+verification.
+
+The current near-traction / 60-degree-entry build follows two repeatable loaded
+stalls.  One run stalled during red approach and the next stalled during green
+approach at essentially the same image depth, center-y 597--598.  The controller
+continued to see a fresh, stable ball and commanded about `A/C=-234/-186` or
+`-225/-195`, while encoder values remained unchanged for several seconds.  This
+isolates the problem to the former 210-command near approach level falling below
+loaded static-friction breakaway, rather than vision loss.  Near approach now
+uses 300, a level that moved successfully during the same field runs; far and
+medium levels remain 300 and 250.  The red-to-green fixed clockwise turn keeps
+the `A/B/C=+420/-420/-420` pure-yaw vector but halves its duration from 400 to
+200 ms, changing the open-loop estimate from about 120 to about 60 degrees.  Its
+preceding 500 ms and following 300 ms stationary intervals are unchanged.  Host
+regression, monitor syntax/parser tests, and the complete ESP-IDF 5.4.4 build
+pass.  The 0x5fb60-byte application SHA-256 is
+`E80F9FAC0A5A7442FDC2F0A70619791199A6C233376449D8AFD6F5A0D32B20EA`.
+COM3 was re-identified as the same ESP32-S3 rev0.2 / 16 MB PSRAM / 32 MB flash /
+MAC `9c:cc:01:fb:8f:9c`; bootloader, partition table, and all six short
+application writes passed hash verification.  Twenty-four passive records over
+12 seconds remained `IDLE`, `mission=0`, `ballctl=0`, `fresh=1`, `cam_err=0`,
+`cmd=0,0,0`, and encoder `0,0,0`.  No motion command was sent after flashing.
+
+The preceding loaded-launch / chained-complete-task build follows the next floor
+test.  Red delivery and the new approximately 60-degree transition completed,
+but green approach then held a fresh, stable target at center-y about 458 while
+actual commands stayed near `A/C=-282/-318` and encoder values remained fixed
+at `-274/-50/751`.  The existing recovery produced only a brief
+`-342/-378` launch sample before returning to the same stalled command.  A
+300-command base alone therefore does not guarantee that both differential
+wheel outputs break loaded static friction.  Every transition from a stopped
+alignment into `BALL_APPROACH` now applies a 450-command launch boost for 300
+ms.  During that pulse, the common component is raised further if necessary so
+the weaker A/C wheel remains at least 400 while the steering difference is
+retained.  After 300 ms the original far/medium/near 300/250/300 cruise profile
+resumes.  Host regression explicitly covers the minimum-wheel invariant and
+the post-boost profile.
+
+The autonomous `BOOT`/`f` path is now the complete assignment sequence.  When
+the obstacle supervisor enters `FINISHED`, it holds the existing zero output
+for `post_autonomy_ball_delay_ms=3000`; with a fresh camera and no fault, the
+app internally transitions directly into the existing red-left/green-right
+two-ball mission.  Serial `n` still starts that mission independently from
+`IDLE`, and `x` still preempts either phase.  Host regression, monitor
+syntax/parser tests, and the full ESP-IDF 5.4.4 build pass.  The 0x5fc90-byte
+application SHA-256 is
+`5646DA2FBF1C3AA6A0B607319DE9E79D2ADAC5620A9E0E8D76A797B7D0374DC9`.
+COM3 was positively re-identified as ESP32-S3 rev0.2 / 16 MB PSRAM / 32 MB
+flash / MAC `9c:cc:01:fb:8f:9c`; bootloader, partition table, and all six
+application chunks passed an explicit post-write `verify_flash` digest check.
+Twenty-three passive startup records remained `IDLE`, `mission=0`, `ballctl=0`,
+`fresh=1`, `cam_err=0`, and `cmd=0,0,0`.  A/C encoder counts increased rapidly
+despite zero command, reconfirming the known unfiltered encoder electrical
+noise; it was not motor motion.  No motion command was sent after flashing.
+
+The current red-exit-reverse build inserts an open-loop approximately 16 cm
+back-away between the red kick and the existing green-entry turn.  After the
+red 500 ms fixed kick completes, the mission still holds zero for 500 ms, then
+commands the confirmed reverse basis `A/B/C=+speed/0/+speed` for 860 ms.  It
+uses 500 for the first 150 ms to break loaded static friction and 400 for the
+remaining 710 ms. This doubles the preceding 8 cm / 430 ms back-away while
+retaining its loaded-start boost profile. It then holds zero for 150 ms before the
+unchanged `A/B/C=+420/-420/-420`, 200 ms approximately 60-degree clockwise
+turn and its unchanged 300 ms settle.  The new reverse/reverse-settle mission
+states were appended as enum values 8 and 9, preserving all existing telemetry
+values including `DONE=4`, `FAILSAFE=5`, turn=6, and turn-settle=7.  Host
+boundary regression, monitor syntax/parser tests, and the full ESP-IDF 5.4.4
+build pass.  The 0x5fe90-byte application SHA-256 is
+`536311675403120EDC2A7AD03E44FA2565895E642849451A06BBF36EDA45DE4C`.
+COM3 was re-identified as the same ESP32-S3 rev0.2 / 16 MB PSRAM / 32 MB flash /
+MAC `9c:cc:01:fb:8f:9c`; bootloader, partition table, and all six application
+chunks passed explicit post-write digest verification.  Twenty passive startup
+records remained `IDLE`, `mission=0`, `ballctl=0`, `fresh=1`, `cam_err=0`,
+`cmd=0,0,0`, and encoder `0,0,0`.  No motion command was sent after flashing;
+the physical reverse distance remains to be measured on the competition floor.
+
+The current right-distance/kick-gate retune shortens the obstacle-bypass right
+strafe by 5%, from 1097 to 1042 ms, while retaining its existing ramp and
+launch-yaw compensation.  The final blue-goal alignment gate immediately before
+each fixed kick is now separate from the ordinary ball-centering gate: it accepts
+an absolute goal error of at most 100 permille for two consecutive frames instead
+of requiring 60 permille for three frames.  Earlier ball-centering behavior
+remains at 60 permille / three frames, so the looser tolerance applies only after
+the ball and goal have already reached the final push-alignment phase.  Host
+regression explicitly verifies that a 90-permille final error now starts the kick
+on the second frame.  Monitor syntax/parser tests and the full ESP-IDF 5.4.4
+build pass.  The 0x5fed0-byte application SHA-256 is
+`09ADC8BC60748120D9F49A5A4E45114715CCBE1E7EB09C505D949A3623AEB3EF`.
+COM3 was positively re-identified as the same ESP32-S3 rev0.2 / 16 MB PSRAM /
+32 MB flash / MAC `9c:cc:01:fb:8f:9c`; bootloader, partition table, and all six
+application chunks passed explicit post-write digest verification.  Nineteen
+passive startup records remained `IDLE`, `mission=0`, `ballctl=0`, `fresh=1`,
+`cam_err=0`, `cmd=0,0,0`, and encoder `0,0,0`.  No motion command was sent.
+
+The current final-kick tolerance retune follows a floor run in which red was
+confirmed at contact, but the locked left blue goal repeatedly measured about
+258--339 permille from the clip axis and caused alternating final-alignment
+pulses.  The final-only `push_align_deadband_permille` is now 350 instead of
+100, still with two consecutive decoded-frame confirmations; ordinary ball
+centering remains 60 / three frames and the earlier ball-to-goal route gate
+remains 100 / three frames.  The otherwise-unused legacy push-realign ceiling
+was raised from 180 to 400 to keep configuration ordering valid.  Host
+regression now proves that a 340-permille final error starts the fixed kick on
+the second frame while a 375-permille error still requests a lateral pulse.
+Monitor syntax/parser tests and the full ESP-IDF 5.4.4 build pass.  The
+0x5fed0-byte application SHA-256 is
+`905FB4D76B651310FFD561FA4995E9A27FA07F23F0D6EE26EFA9B245E94E5443`.
+COM3 was re-identified as the same ESP32-S3 rev0.2 / 16 MB PSRAM / 32 MB flash /
+MAC `9c:cc:01:fb:8f:9c`; bootloader, partition table, and all six application
+chunks passed explicit post-write digest verification.  The passive GUI remains
+open with `IDLE`, `mission=0`, `ballctl=0`, `fresh=1`, `cmd=0,0,0`, and encoder
+`0,0,0`; its camera counters contain one accumulated decode error and one drop,
+without a stale-camera or motor fault.  No post-flash motion command was sent.
+
+The current pre-align-before-approach build supersedes the preceding wide final
+gate after its floor trial kicked red successfully but visibly off-axis, then
+lost the blue destination repeatedly during close green-ball handling.  A
+confirmed ball may no longer begin ball-only alignment or forward approach when
+the requested blue target is absent.  The controller remains stopped between
+80 ms goal-search yaw pulses until ball and preferred target are simultaneously
+confirmed, performs the existing strict 100-permille / three-frame lateral
+route alignment, then centers the ball with in-place yaw while continuing to
+require the locked target.  Target loss during either pre-alignment phase
+returns to target search; a 2500 ms route timeout now enters stationary recovery
+instead of authorizing best effort.  Only after both route and heading are
+confirmed may forward approach start.  Once two contact frames are confirmed,
+that strict pre-aligned path starts the fixed 500 ms kick directly, so normal
+close-range blue occlusion cannot cause another heading change.  The exceptional
+already-in-clip fallback retains its post-contact target search, but its gate is
+tightened back from 350 to 100 permille / two frames; the legacy ceiling returns
+from 400 to 180.  Host regression covers all new gates, monitor syntax/parser
+tests pass, and the full ESP-IDF 5.4.4 build passes.  The 0x5ffc0-byte application
+SHA-256 is
+`E32E01E689C359DAE6B1E43764698764FCB4C0A548A36FFAD8D2EBCA28D1937C`.
+COM3 again identified the ESP32-S3 rev0.2 / 16 MB PSRAM / 32 MB flash / MAC
+`9c:cc:01:fb:8f:9c`; bootloader, partition table, and all six application chunks
+passed explicit post-write digest verification.  The passive GUI remains open
+and reports `IDLE`, `mission=0`, `ballctl=0`, `fresh=1`, `cam_err=0`,
+`cmd=0,0,0`, and encoders `0,0,0`.  No post-flash motion command was sent.
+
+The current ball-first/relaxed-blue build supersedes that mandatory
+pre-align-before-approach behavior.  A confirmed ball no longer waits in a
+dedicated blue-goal search when the preferred destination is absent: it resumes
+the original stopped ball-centering and forward-approach flow, and a blue goal
+that becomes available later preempts approach for route correction.  Losing a
+goal during route correction falls back to ball centering, while route timeout
+continues with best-effort alignment instead of stationary recovery.  Contact
+confirmation once again enters the post-contact blue-goal search/alignment gate
+even when a route was previously aligned; two observations within 100 permille
+remain necessary before the fixed kick.  Distant blue spatial admission is
+relaxed from three matched/two strong pixels to two matched/one strong pixel,
+and blue now has an independent three-consecutive-frame confirmation count;
+the red far-ball five-frame gate is unchanged.  Host regression, monitor parser
+checks, and the full ESP-IDF build pass.  The 0x5ff80-byte application SHA-256
+is `0BEC90773730F02647382DA2BE4EC656FC50174F06A010120BB2CF7363B072C3`.
+COM3 again identified the same ESP32-S3 rev0.2 / 16 MB PSRAM / 32 MB flash / MAC
+`9c:cc:01:fb:8f:9c`; bootloader, partition table, and all six application chunks
+passed explicit post-write digest verification.  The reopened passive GUI (PID
+15620) remains `IDLE`, `mission=0`, `ballctl=0`, `fresh=1`, `cam_err=0`,
+`cmd=0,0,0`, and encoders `0,0,0`; both visible blue targets reached confirmed
+status without any motion command.
+
+The current red-exit distance build doubles only the post-red reverse duration
+from 430 to 860 ms, changing its open-loop estimate from about 8 to about
+16 cm. The first 150 ms remains the 500-command loaded-start boost, followed
+by command 400; the 150 ms reverse settle and existing green-entry right turn
+are unchanged. Host regression, monitor parser self-test, and the full
+ESP-IDF 5.4.4 build pass. The 0x5ff80-byte application SHA-256 is
+`33664D44868531CB30699973772AA0794AAAD5A6DCC4A17BD2238231FB44BA69`.
+COM3 was positively identified as ESP32-S3 rev0.2 / 16 MB PSRAM / MAC
+`9c:cc:01:fb:8f:9c`; bootloader, partition table, and all six application
+chunks passed both write-time hashing and independent `verify_flash` digest
+checks. Eleven passive status records remained `IDLE`, `mission=0`,
+`fresh=1`, `cam_err=0`, and `cmd=0,0,0`, with no preview CRC error. No motion
+command was sent after flashing. The electrically noisy encoder counts remain
+unsuitable for distance control.
+
+The current obstacle-distance build raises the immediate raw-Echo trigger from
+80 to 110 mm, extends the middle forward segment by 5% from 1184 to 1243 ms,
+and shortens the return right strafe by 40% from 1042 to 625 ms. The existing
+400 ms right ramp, yaw compensation, left strafe, heading trim, final forward,
+and ball mission are unchanged. Host regression, monitor parser self-test, and
+the full ESP-IDF 5.4.4 build pass. The 0x5ff80-byte application SHA-256 is
+`32B8487D4A4058F133ED88E01E7716A674BFC2A3F2A40CE53E06D48FF7C79130`.
+The unstable CP210x link required a driver restart and 57600-baud ROM no-stub
+recovery. Bootloader, partition table, and all six application chunks passed
+both write-time hashing and an independent eight-region digest verification.
+Nine final passive records stayed `IDLE`, `mission=0`, `fresh=1`, `cam_err=0`,
+and `cmd=0,0,0`; parser CRC errors were zero. C encoder counts rose at zero
+command, matching the known electrical-noise issue. No motion command was sent.
+
 ## Next Work
 
 1. Mount the camera rigidly, place the car over the competition black line, and
@@ -1170,10 +1637,14 @@ no movement command was sent.
 4. On the competition surface, measure at least five `q/e` displacements and
    five `g` forward displacements. Use medians to calibrate lateral and forward
    milliseconds per centimetre.
-5. Measure the scaled 1030/1074 ms fixed segments and the full 1097 ms right
-   segment. Verify its 300-to-380, 400 ms acceleration, confirm that all camera
+5. Measure the scaled 1468/1243 ms fixed segments and the full 625 ms right
+   segment. Confirm that `BRAKE` transitions directly to left strafe, then
+   verify the post-strafe 460/60 ms trim plus 150 ms stop removes the final
+   clockwise slip without over-correcting. Verify
+   the right segment's 300-to-380, 400 ms acceleration, confirm that all camera
    line patterns are ignored after `BRAKE`, then measure the fixed 525 ms
-   straight-forward segment and subsequent latched `FINISHED` stop.
+   straight-forward segment, the 3000 ms zero-output `FINISHED` handoff, and
+   the automatic transition into the red/green mission.
 6. Filter the motor-induced encoder glitches before replacing time-calibrated
    segments with encoder distance control. Add MPU6500 only if heading drift
    makes the open-loop rectangular path insufficiently repeatable.

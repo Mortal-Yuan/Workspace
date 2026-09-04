@@ -11,6 +11,7 @@ typedef struct {
     camera_line_config_t camera_line;
     camera_ball_config_t camera_ball;
     ball_approach_config_t ball_approach;
+    ball_mission_config_t ball_mission;
     ultrasonic_config_t ultrasonic;
     obstacle_config_t obstacle;
     start_button_config_t button;
@@ -18,6 +19,7 @@ typedef struct {
     int telemetry_period_ms;
     int line_monitor_period_ms;
     int default_speed;
+    int post_autonomy_ball_delay_ms;
 } app_config_t;
 
 extern const app_config_t APP_CONFIG;

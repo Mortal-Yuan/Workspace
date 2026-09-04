@@ -27,6 +27,7 @@ static const char *mode_name(app_mode_t mode)
     case APP_MODE_MANUAL: return "MANUAL";
     case APP_MODE_SELF_TEST: return "SELF_TEST";
     case APP_MODE_BALL_APPROACH: return "BALL";
+    case APP_MODE_BALL_MISSION: return "MISSION";
     case APP_MODE_FAULT: return "FAULT";
     default: return "UNKNOWN";
     }
@@ -256,7 +257,7 @@ static void diagnostics_task(void *arg)
             length = bounded_length(snprintf(
                 scratch, sizeof(scratch),
                 "STATUS t=%" PRId64 "ms mode=%s obstacle=%u progress=%u "
-                "startup=%u ballctl=%u/%d/%u/%u/%u "
+                "startup=%u mission=%u ballctl=%u/%u/%d/%u/%u/%u "
                 "CAM=%d%d%d%d pattern=%x fresh=%d seq=%" PRIu32
                 " pos=%d far=%d head=%d steer=%d width=%u "
                 "comp=%u/%u/%u black=%u thr=%u contrast=%u "
@@ -265,6 +266,9 @@ static void diagnostics_task(void *arg)
                 "bshape=%u/%u bconf=%u brgb=%u/%u/%u bpix=%u "
                 "bseed=%u/%u bbox=%u/%u/%u/%u bc=%u "
                 "bprobe=%d/%d/%u/%u/%u/%u "
+                "GREEN=%u/%d/%d/%u gfar=%d gxy=%d/%u ga=%u "
+                "gconf=%u grgb=%u/%u/%u gpix=%u/%u "
+                "gbbox=%u/%u/%u/%u "
                 "LEFT_TARGET=%u/%d/%d/%u lfar=%d lxy=%d/%u "
                 "lwh=%u/%u la=%u lconf=%u lrgb=%u/%u/%u "
                 "lpix=%u/%u lbbox=%u/%u/%u/%u "
@@ -280,7 +284,9 @@ static void diagnostics_task(void *arg)
                 snapshot.time_us / 1000, mode_name(snapshot.mode),
                 snapshot.obstacle_state, snapshot.obstacle_clear_count,
                 snapshot.startup_maneuver_phase,
+                snapshot.ball_mission_state,
                 snapshot.ball_approach_state,
+                snapshot.ball_target_color,
                 snapshot.ball_approach_error,
                 snapshot.ball_capture_frames,
                 snapshot.ball_goal_frames,
@@ -332,6 +338,24 @@ static void diagnostics_task(void *arg)
                 (unsigned)snapshot.camera.ball.probe_red,
                 (unsigned)snapshot.camera.ball.probe_green,
                 (unsigned)snapshot.camera.ball.probe_blue,
+                (unsigned)snapshot.camera.green_ball.color,
+                snapshot.camera.green_ball.candidate,
+                snapshot.camera.green_ball.detected,
+                (unsigned)snapshot.camera.green_ball.stable_frames,
+                snapshot.camera.green_ball.far_candidate,
+                snapshot.camera.green_ball.center_x_permille,
+                (unsigned)snapshot.camera.green_ball.center_y_permille,
+                (unsigned)snapshot.camera.green_ball.area_permille,
+                (unsigned)snapshot.camera.green_ball.confidence_permille,
+                (unsigned)snapshot.camera.green_ball.mean_red,
+                (unsigned)snapshot.camera.green_ball.mean_green,
+                (unsigned)snapshot.camera.green_ball.mean_blue,
+                (unsigned)snapshot.camera.green_ball.matched_pixels,
+                (unsigned)snapshot.camera.green_ball.strong_pixels,
+                (unsigned)snapshot.camera.green_ball.box_left_permille,
+                (unsigned)snapshot.camera.green_ball.box_top_permille,
+                (unsigned)snapshot.camera.green_ball.box_right_permille,
+                (unsigned)snapshot.camera.green_ball.box_bottom_permille,
                 (unsigned)snapshot.camera.left_target.color,
                 snapshot.camera.left_target.candidate,
                 snapshot.camera.left_target.detected,

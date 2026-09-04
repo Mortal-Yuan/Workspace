@@ -80,9 +80,22 @@ static bool color_gate(const uint8_t *rgb, ball_color_t color,
         rgb[target] * 1000 >= ratio_permille * total;
 }
 
+static bool green_gate(const uint8_t *rgb, int green_minimum,
+                       int red_dominance, int blue_tolerance)
+{
+    return rgb[1] >= green_minimum &&
+        rgb[1] - rgb[0] >= red_dominance &&
+        rgb[2] - rgb[1] <= blue_tolerance;
+}
+
 static bool is_weak_color(const uint8_t *rgb, ball_color_t color,
                           const camera_ball_config_t *config)
 {
+    if (color == BALL_COLOR_GREEN) {
+        return green_gate(
+            rgb, config->green_minimum, config->green_red_dominance,
+            config->green_blue_tolerance);
+    }
     if (color == BALL_COLOR_BLUE) {
         return color_gate(rgb, color, config->blue_minimum,
                           config->blue_dominance,
@@ -96,6 +109,12 @@ static bool is_weak_color(const uint8_t *rgb, ball_color_t color,
 static bool is_strong_color(const uint8_t *rgb, ball_color_t color,
                             const camera_ball_config_t *config)
 {
+    if (color == BALL_COLOR_GREEN) {
+        return green_gate(
+            rgb, config->strong_green_minimum,
+            config->strong_green_red_dominance,
+            config->strong_green_blue_tolerance);
+    }
     if (color == BALL_COLOR_BLUE) {
         return color_gate(rgb, color, config->blue_minimum,
                           config->strong_blue_dominance,
@@ -122,7 +141,8 @@ static bool is_highlight_support(const uint8_t *rgb,
  * pass grows by at most one pixel and cannot flood a white scene. */
 static void repair_specular_highlights(
     const uint8_t *pixels, size_t width, size_t height, bool rotate_180,
-    const camera_ball_config_t *config, uint8_t *mask)
+    ball_color_t requested_color, const camera_ball_config_t *config,
+    uint8_t *mask)
 {
     /* Keep this pass count bounded at native resolution. Scaling the old
      * 80x60 two-pixel radius to 16 VGA passes made a bright background grow
@@ -155,7 +175,8 @@ static void repair_specular_highlights(
                 ball_color_t color = BALL_COLOR_NONE;
                 if (red_neighbours >= 3U &&
                     red_neighbours > blue_neighbours) {
-                    color = BALL_COLOR_RED;
+                    color = requested_color == BALL_COLOR_GREEN ?
+                        BALL_COLOR_GREEN : BALL_COLOR_RED;
                 } else if (blue_neighbours >= 3U &&
                            blue_neighbours > red_neighbours) {
                     color = BALL_COLOR_BLUE;
@@ -218,7 +239,8 @@ static camera_ball_observation_t analyze_target_rgb888(
         height > CAMERA_BALL_VISION_MAX_HEIGHT ||
         (requested_color != BALL_COLOR_NONE &&
          requested_color != BALL_COLOR_RED &&
-         requested_color != BALL_COLOR_BLUE)) {
+         requested_color != BALL_COLOR_BLUE &&
+         requested_color != BALL_COLOR_GREEN)) {
         return result;
     }
     result.valid = true;
@@ -262,15 +284,20 @@ static camera_ball_observation_t analyze_target_rgb888(
                 result.probe_blue = rgb[2];
             }
             mask[index] = 0;
+            const bool weak_green = requested_color == BALL_COLOR_GREEN &&
+                is_weak_color(rgb, BALL_COLOR_GREEN, config);
             const bool weak_red = requested_color != BALL_COLOR_BLUE &&
+                requested_color != BALL_COLOR_GREEN &&
                 is_weak_color(rgb, BALL_COLOR_RED, config);
             const bool weak_blue = requested_color != BALL_COLOR_RED &&
+                requested_color != BALL_COLOR_GREEN &&
                 is_weak_color(rgb, BALL_COLOR_BLUE, config);
-            if (weak_red || weak_blue) {
-                const ball_color_t color = weak_blue &&
+            if (weak_green || weak_red || weak_blue) {
+                const ball_color_t color = weak_green ? BALL_COLOR_GREEN :
+                    (weak_blue &&
                     (!weak_red || target_color_score(rgb, BALL_COLOR_BLUE) >
                                   target_color_score(rgb, BALL_COLOR_RED)) ?
-                    BALL_COLOR_BLUE : BALL_COLOR_RED;
+                    BALL_COLOR_BLUE : BALL_COLOR_RED);
                 mask[index] = BALL_PIXEL_WEAK_COLOR | BALL_PIXEL_SUPPORT |
                     (color == BALL_COLOR_BLUE ? BALL_PIXEL_BLUE : 0U);
                 if (is_strong_color(rgb, color, config)) {
@@ -280,7 +307,7 @@ static camera_ball_observation_t analyze_target_rgb888(
         }
     }
     repair_specular_highlights(
-        pixels, width, height, rotate_180, config, mask);
+        pixels, width, height, rotate_180, requested_color, config, mask);
 
     uint32_t best_area = 0;
     uint32_t best_red_area = 0;
@@ -312,8 +339,9 @@ static camera_ball_observation_t analyze_target_rgb888(
         }
         const uint8_t component_color_flag =
             mask[start] & BALL_PIXEL_BLUE;
-        const ball_color_t component_color = component_color_flag != 0U ?
-            BALL_COLOR_BLUE : BALL_COLOR_RED;
+        const ball_color_t component_color =
+            requested_color == BALL_COLOR_GREEN ? BALL_COLOR_GREEN :
+            (component_color_flag != 0U ? BALL_COLOR_BLUE : BALL_COLOR_RED);
 
         uint32_t head = 0;
         uint32_t tail = 0;
@@ -389,21 +417,28 @@ static camera_ball_observation_t analyze_target_rgb888(
         const int mean_green = red_area > 0U ? (int)(sum_g / red_area) : 0;
         const int mean_blue = red_area > 0U ? (int)(sum_b / red_area) : 0;
         const int mean_target = component_color == BALL_COLOR_BLUE ?
-            mean_blue : mean_red;
+            mean_blue : component_color == BALL_COLOR_GREEN ?
+            mean_green : mean_red;
         const int mean_other_a = component_color == BALL_COLOR_BLUE ?
+            mean_red : component_color == BALL_COLOR_GREEN ?
             mean_red : mean_green;
         const int mean_other_b = component_color == BALL_COLOR_BLUE ?
-            mean_green : mean_blue;
+            mean_green : component_color == BALL_COLOR_GREEN ?
+            mean_red : mean_blue;
         const int mean_competitor = mean_other_a > mean_other_b ?
             mean_other_a : mean_other_b;
         const int mean_color_dominance = mean_target - mean_competitor;
         const int strong_color_dominance =
             component_color == BALL_COLOR_BLUE ?
                 config->strong_blue_dominance :
+            component_color == BALL_COLOR_GREEN ?
+                config->strong_green_red_dominance :
                 config->strong_red_dominance;
         const int minimum_mean_color_dominance =
             component_color == BALL_COLOR_BLUE ?
                 config->minimum_mean_blue_dominance :
+            component_color == BALL_COLOR_GREEN ?
+                config->minimum_mean_green_red_dominance :
                 config->minimum_mean_red_dominance;
         const int minimum_roundness =
             component_color == BALL_COLOR_BLUE ?
@@ -429,6 +464,9 @@ static camera_ball_observation_t analyze_target_rgb888(
             strong_ratio_permille >=
                 config->minimum_strong_ratio_permille &&
             mean_color_dominance >= minimum_mean_color_dominance &&
+            (component_color != BALL_COLOR_GREEN ||
+             mean_blue - mean_green <=
+                config->maximum_mean_green_blue_excess) &&
             minimum_x >= horizontal_edge_margin &&
             minimum_y >= vertical_edge_margin &&
             maximum_x + horizontal_edge_margin < width &&
@@ -466,9 +504,31 @@ static camera_ball_observation_t analyze_target_rgb888(
                 config->blue_target_minimum_roundness_permille &&
             confidence >=
                 config->blue_target_minimum_confidence_permille;
+        const bool tiny_green_ball_shape =
+            component_color == BALL_COLOR_GREEN && !normal_ball_size &&
+            red_area >= (uint32_t)config->green_far_minimum_pixels &&
+            strong_area >=
+                (uint32_t)config->green_far_minimum_strong_pixels &&
+            strong_ratio_permille >=
+                config->minimum_strong_ratio_permille &&
+            mean_color_dominance >= minimum_mean_color_dominance &&
+            mean_blue - mean_green <=
+                config->maximum_mean_green_blue_excess &&
+            fill_permille >= config->minimum_fill_permille &&
+            roundness_permille >=
+                config->green_far_minimum_roundness_permille &&
+            minimum_x >= horizontal_edge_margin &&
+            minimum_y >= vertical_edge_margin &&
+            maximum_x + horizontal_edge_margin < width &&
+            maximum_y + vertical_edge_margin < height &&
+            confidence >= config->green_far_minimum_confidence_permille;
         const bool ball_shape = component_color == BALL_COLOR_BLUE ?
             normal_blue_target_shape || tiny_blue_target_shape :
-            common_ball_shape && (normal_ball_size || far_ball_size);
+            component_color == BALL_COLOR_GREEN ?
+                (common_ball_shape &&
+                 (normal_ball_size || far_ball_size)) ||
+                    tiny_green_ball_shape :
+                common_ball_shape && (normal_ball_size || far_ball_size);
         const bool replace_best = best_area == 0U ||
             (ball_shape && !best_is_ball) ||
             (ball_shape == best_is_ball &&
@@ -496,7 +556,8 @@ static camera_ball_observation_t analyze_target_rgb888(
         best_color = component_color;
         best_is_far_ball = ball_shape &&
             (far_ball_size ||
-             (component_color == BALL_COLOR_BLUE && !normal_ball_size));
+             (component_color == BALL_COLOR_BLUE && !normal_ball_size) ||
+             tiny_green_ball_shape);
     }
 
     if (best_area == 0U || best_red_area == 0U) return result;

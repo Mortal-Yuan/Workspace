@@ -294,6 +294,7 @@ static const char *mode_text(app_mode_t mode)
     case APP_MODE_MANUAL: return "MANUAL";
     case APP_MODE_SELF_TEST: return "TEST";
     case APP_MODE_BALL_APPROACH: return "BALL";
+    case APP_MODE_BALL_MISSION: return "MISSION";
     case APP_MODE_FAULT: return "FAULT";
     default: return "UNKNOWN";
     }
@@ -307,7 +308,8 @@ static uint16_t status_color(const status_display_snapshot_t *snapshot)
     if (snapshot->finished) return RGB565(30, 160, 220);
     if (snapshot->obstacle_state > 1) return RGB565(235, 150, 20);
     return snapshot->mode == APP_MODE_AUTONOMOUS ||
-           snapshot->mode == APP_MODE_BALL_APPROACH ?
+           snapshot->mode == APP_MODE_BALL_APPROACH ||
+           snapshot->mode == APP_MODE_BALL_MISSION ?
            RGB565(20, 180, 75) : RGB565(80, 85, 95);
 }
 
@@ -395,7 +397,8 @@ static esp_err_t render_screen(status_display_t *display,
                              snapshot->failsafe ? "FAILSAFE" :
                              snapshot->mode == APP_MODE_FAULT ? "FAULT" :
                              snapshot->mode == APP_MODE_AUTONOMOUS ||
-                             snapshot->mode == APP_MODE_BALL_APPROACH ?
+                             snapshot->mode == APP_MODE_BALL_APPROACH ||
+                             snapshot->mode == APP_MODE_BALL_MISSION ?
                              "RUNNING" : "READY";
         const int footer_width = (int)strlen(footer) * 12;
         draw_text(display, chunk_y,

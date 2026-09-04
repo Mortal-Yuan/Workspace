@@ -17,6 +17,7 @@ typedef enum {
     APP_MODE_MANUAL,
     APP_MODE_SELF_TEST,
     APP_MODE_BALL_APPROACH,
+    APP_MODE_BALL_MISSION,
     APP_MODE_FAULT,
 } app_mode_t;
 

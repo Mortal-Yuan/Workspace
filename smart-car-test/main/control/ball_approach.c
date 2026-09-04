@@ -11,9 +11,10 @@ static int clamp_int(int value, int minimum, int maximum)
     return value < minimum ? minimum : value > maximum ? maximum : value;
 }
 
-static bool is_red_ball(const camera_ball_observation_t *ball)
+static bool is_target_ball(const ball_approach_t *controller,
+                           const camera_ball_observation_t *ball)
 {
-    return ball->detected && ball->color == BALL_COLOR_RED;
+    return ball->detected && ball->color == controller->target_color;
 }
 
 static bool is_blue_goal(const camera_ball_observation_t *goal)
@@ -33,24 +34,11 @@ static int goal_track_distance(const camera_ball_observation_t *goal,
         abs((int)goal->center_y_permille - (int)track->center_y_permille);
 }
 
-static bool first_goal_preferred(const camera_ball_observation_t *first,
-                                 const camera_ball_observation_t *second)
-{
-    if (first->detected != second->detected) return first->detected;
-    if (first->stable_frames != second->stable_frames) {
-        return first->stable_frames > second->stable_frames;
-    }
-    if (first->confidence_permille != second->confidence_permille) {
-        return first->confidence_permille > second->confidence_permille;
-    }
-    return first->matched_pixels >= second->matched_pixels;
-}
-
 /* The camera still reports up to two positional blue components for the
- * monitor, but ball control treats them as an unordered set.  The first
- * confirmed component seen after start becomes the preference; afterwards
- * nearest-frame continuity keeps that physical target selected as it crosses
- * the image center. */
+ * monitor.  Before target lock, accept only the requested image side so the
+ * red delivery cannot accidentally choose the visible right goal while the
+ * left goal is still hidden.  After lock, nearest-frame continuity keeps that
+ * physical target selected as it crosses the image center. */
 static void update_selected_goal(ball_approach_t *controller,
                                  const camera_line_snapshot_t *camera)
 {
@@ -61,17 +49,26 @@ static void update_selected_goal(ball_approach_t *controller,
     const camera_ball_observation_t previous = controller->selected_goal;
     const camera_ball_observation_t *selected = NULL;
 
-    if (first_visible && second_visible) {
-        if (controller->goal_preference_locked) {
-            selected = goal_track_distance(first, &previous) <=
-                    goal_track_distance(second, &previous) ? first : second;
-        } else {
-            selected = first_goal_preferred(first, second) ? first : second;
+    if (!controller->goal_preference_locked) {
+        const camera_ball_observation_t *preferred =
+            controller->goal_preference == BALL_GOAL_PREFERENCE_LEFT ?
+                first : second;
+        if (is_blue_candidate(preferred)) selected = preferred;
+    } else {
+        const bool first_continuous = first_visible &&
+            goal_track_distance(first, &previous) <=
+                controller->config.goal_tracking_tolerance_permille;
+        const bool second_continuous = second_visible &&
+            goal_track_distance(second, &previous) <=
+                controller->config.goal_tracking_tolerance_permille;
+        if (first_continuous && second_continuous) {
+        selected = goal_track_distance(first, &previous) <=
+                goal_track_distance(second, &previous) ? first : second;
+        } else if (first_continuous) {
+            selected = first;
+        } else if (second_continuous) {
+            selected = second;
         }
-    } else if (first_visible) {
-        selected = first;
-    } else if (second_visible) {
-        selected = second;
     }
 
     if (selected != NULL) {
@@ -135,7 +132,7 @@ static bool ball_is_inside_clip(
         ball->height_permille >=
             controller->config.capture_height_permille ||
         ball->area_permille >= controller->config.capture_area_permille;
-    return is_red_ball(ball) &&
+    return is_target_ball(controller, ball) &&
         abs(error) <= controller->config.realign_threshold_permille &&
         ball->center_y_permille >=
             controller->config.capture_center_y_permille &&
@@ -144,30 +141,21 @@ static bool ball_is_inside_clip(
         large_enough;
 }
 
-static bool ball_is_in_goal(
-    const ball_approach_t *controller,
-    const camera_ball_observation_t *ball,
-    const camera_ball_observation_t *goal)
-{
-    if (!is_red_ball(ball) || !is_blue_goal(goal)) {
-        return false;
-    }
-    const int ball_x = ((int)ball->center_x_permille + 1000) / 2;
-    const int ball_y = ball->center_y_permille;
-    const int margin = controller->config.goal_overlap_margin_permille;
-    return ball_x >= (int)goal->box_left_permille - margin &&
-        ball_x <= (int)goal->box_right_permille + margin &&
-        ball_y >= (int)goal->box_top_permille - margin &&
-        ball_y <= (int)goal->box_bottom_permille + margin;
-}
-
 static motor_command_t steered_forward_command(
     int speed, int error, int steering_gain_permille,
-    int maximum_correction)
+    int maximum_correction, int minimum_wheel_speed)
 {
     const int correction = clamp_int(
         error * steering_gain_permille / 1000,
         -maximum_correction, maximum_correction);
+    /* Keep the differential correction, but raise the common component when
+     * a loaded launch pulse would otherwise leave one wheel below breakaway.
+     * For example, a +/-50 correction with a 400 floor becomes 450+/-50,
+     * guaranteeing 400 on the weaker wheel instead of discarding steering. */
+    if (minimum_wheel_speed > 0 &&
+        speed - abs(correction) < minimum_wheel_speed) {
+        speed = minimum_wheel_speed + abs(correction);
+    }
     return (motor_command_t) {
         .a = (int16_t)(-speed + correction),
         .b = 0,
@@ -186,29 +174,24 @@ static motor_command_t approach_command(
                controller->config.medium_y_permille) {
         speed = controller->config.medium_forward_speed;
     }
-    if (now_us - controller->approach_started_us <
-        controller->config.forward_boost_ms * 1000LL &&
-        speed < controller->config.forward_boost_speed) {
+    const bool boost_active =
+        now_us - controller->approach_started_us <
+            controller->config.forward_boost_ms * 1000LL;
+    if (boost_active && speed < controller->config.forward_boost_speed) {
         speed = controller->config.forward_boost_speed;
     }
     return steered_forward_command(
         speed, error, controller->config.steering_gain_permille,
-        controller->config.maximum_correction);
+        controller->config.maximum_correction,
+        boost_active ? controller->config.forward_boost_min_wheel_speed : 0);
 }
 
-static motor_command_t push_command(
-    const ball_approach_t *controller, int goal_error, int64_t now_us)
+static motor_command_t kick_command(const ball_approach_t *controller)
 {
-    int speed = controller->config.push_speed;
-    if (controller->push_motion_started_us != 0 &&
-        now_us - controller->push_motion_started_us <
-            controller->config.push_boost_ms * 1000LL) {
-        speed = controller->config.push_boost_speed;
-    }
+    /* Once ball/goal alignment is confirmed, execute one open-loop straight
+     * kick.  Vision is deliberately ignored until the bounded pulse ends. */
     return steered_forward_command(
-        speed, goal_error,
-        controller->config.push_steering_gain_permille,
-        controller->config.push_maximum_correction);
+        controller->config.push_boost_speed, 0, 0, 0, 0);
 }
 
 static void enter_state(ball_approach_t *controller,
@@ -237,7 +220,11 @@ static void begin_route_alignment(
                 BALL_APPROACH_REASON_CONFIRMED, now_us);
 }
 
-static void after_red_confirmed(
+static void begin_goal_search(
+    ball_approach_t *controller, ball_approach_decision_t *decision,
+    bool settle_first, int64_t now_us);
+
+static void after_ball_confirmed(
     ball_approach_t *controller, ball_approach_decision_t *decision,
     const camera_ball_observation_t *goal, int64_t now_us)
 {
@@ -245,12 +232,14 @@ static void after_red_confirmed(
     if (is_blue_goal(goal)) {
         begin_route_alignment(controller, decision, now_us);
     } else {
-        /* A distant blue target is optional at this stage.  Follow the red
-         * ball first; target search is deferred until capture is confirmed. */
+        /* The destination may be distant or temporarily hidden.  Resume the
+         * original ball-first flow: center and approach the confirmed ball;
+         * if the preferred goal appears later, route alignment preempts the
+         * approach at that point. */
         controller->align_frames = 0;
         controller->route_completed = false;
         enter_state(controller, decision, BALL_APPROACH_STATE_ALIGN,
-                    BALL_APPROACH_REASON_GOAL_MISSING, now_us);
+                    BALL_APPROACH_REASON_CONFIRMED, now_us);
     }
 }
 
@@ -260,6 +249,10 @@ static void begin_goal_search(
 {
     controller->align_frames = 0;
     controller->search_motion_ms = 0;
+    if (controller->capture_frames <
+        controller->config.capture_confirm_frames) {
+        controller->route_completed = false;
+    }
     controller->settle_next_state = BALL_APPROACH_STATE_GOAL_SEARCH_LEFT;
     enter_state(controller, decision,
                 settle_first ? BALL_APPROACH_STATE_GOAL_SEARCH_SETTLE :
@@ -283,7 +276,6 @@ static void after_capture_confirmed(
     const camera_ball_observation_t *goal, int64_t now_us)
 {
     controller->align_frames = 0;
-    controller->goal_frames = 0;
     controller->push_started_us = now_us;
     if (is_blue_goal(goal)) {
         enter_state(controller, decision, BALL_APPROACH_STATE_PUSH_ALIGN,
@@ -293,7 +285,7 @@ static void after_capture_confirmed(
     }
 }
 
-static void stop_for_unconfirmed_red(
+static void stop_for_unconfirmed_ball(
     ball_approach_t *controller, ball_approach_decision_t *decision,
     const camera_ball_observation_t *ball, int64_t now_us)
 {
@@ -301,7 +293,7 @@ static void stop_for_unconfirmed_red(
     controller->route_completed = false;
     controller->approach_started_us = 0;
     controller->search_motion_ms = 0;
-    if (ball->candidate && ball->color == BALL_COLOR_RED) {
+    if (ball->candidate && ball->color == controller->target_color) {
         enter_state(controller, decision,
                     BALL_APPROACH_STATE_ACQUIRE_STOP,
                     BALL_APPROACH_REASON_LOST, now_us);
@@ -350,8 +342,22 @@ void ball_approach_reset(ball_approach_t *controller)
 
 void ball_approach_start(ball_approach_t *controller, int64_t now_us)
 {
+    ball_approach_start_for(controller, BALL_COLOR_RED,
+                            BALL_GOAL_PREFERENCE_LEFT, now_us);
+}
+
+void ball_approach_start_for(ball_approach_t *controller,
+                             ball_color_t target_color,
+                             ball_goal_preference_t goal_preference,
+                             int64_t now_us)
+{
     ball_approach_reset(controller);
-    controller->state = BALL_APPROACH_STATE_SEARCH_LEFT;
+    controller->target_color = target_color;
+    controller->goal_preference = goal_preference;
+    controller->initial_search_state =
+        goal_preference == BALL_GOAL_PREFERENCE_RIGHT ?
+            BALL_APPROACH_STATE_SEARCH_RIGHT : BALL_APPROACH_STATE_SEARCH_LEFT;
+    controller->state = controller->initial_search_state;
     controller->last_reason = BALL_APPROACH_REASON_STARTED;
     controller->run_started_us = now_us;
     controller->state_started_us = now_us;
@@ -401,7 +407,9 @@ ball_approach_decision_t ball_approach_step(
     }
     if (controller->state == BALL_APPROACH_STATE_IDLE) return decision;
 
-    const camera_ball_observation_t *ball = &camera->ball;
+    const camera_ball_observation_t *ball =
+        controller->target_color == BALL_COLOR_GREEN ?
+            &camera->green_ball : &camera->ball;
     const bool new_frame = camera->decoded_frames !=
         controller->last_frame_seq;
     if (new_frame) {
@@ -425,7 +433,8 @@ ball_approach_decision_t ball_approach_step(
 
     if (controller->state != BALL_APPROACH_STATE_DONE &&
         controller->state != BALL_APPROACH_STATE_FAILSAFE &&
-        controller->state != BALL_APPROACH_STATE_RECOVERY_WAIT) {
+        controller->state != BALL_APPROACH_STATE_RECOVERY_WAIT &&
+        controller->state != BALL_APPROACH_STATE_PUSH) {
         if (!camera->fresh) {
             enter_anomaly_wait(controller, &decision,
                            BALL_APPROACH_REASON_CAMERA_STALE, now_us);
@@ -452,9 +461,10 @@ ball_approach_decision_t ball_approach_step(
     switch (controller->state) {
     case BALL_APPROACH_STATE_SEARCH_LEFT:
     case BALL_APPROACH_STATE_SEARCH_RIGHT: {
-        if (new_frame && ball->candidate && ball->color == BALL_COLOR_RED) {
-            if (is_red_ball(ball)) {
-                after_red_confirmed(controller, &decision, goal, now_us);
+        if (new_frame && ball->candidate &&
+            ball->color == controller->target_color) {
+            if (is_target_ball(controller, ball)) {
+                after_ball_confirmed(controller, &decision, goal, now_us);
             } else {
                 enter_state(controller, &decision,
                             BALL_APPROACH_STATE_ACQUIRE_STOP,
@@ -491,9 +501,10 @@ ball_approach_decision_t ball_approach_step(
     }
 
     case BALL_APPROACH_STATE_SEARCH_SETTLE:
-        if (new_frame && ball->candidate && ball->color == BALL_COLOR_RED) {
-            if (is_red_ball(ball)) {
-                after_red_confirmed(controller, &decision, goal, now_us);
+        if (new_frame && ball->candidate &&
+            ball->color == controller->target_color) {
+            if (is_target_ball(controller, ball)) {
+                after_ball_confirmed(controller, &decision, goal, now_us);
             } else {
                 enter_state(controller, &decision,
                             BALL_APPROACH_STATE_ACQUIRE_STOP,
@@ -509,11 +520,11 @@ ball_approach_decision_t ball_approach_step(
 
     case BALL_APPROACH_STATE_ACQUIRE_STOP:
         if (new_frame) {
-            if (is_red_ball(ball)) {
-                after_red_confirmed(controller, &decision, goal, now_us);
+            if (is_target_ball(controller, ball)) {
+                after_ball_confirmed(controller, &decision, goal, now_us);
             } else if (!ball->candidate ||
-                       ball->color != BALL_COLOR_RED) {
-                stop_for_unconfirmed_red(
+                       ball->color != controller->target_color) {
+                stop_for_unconfirmed_ball(
                     controller, &decision, ball, now_us);
             }
         }
@@ -532,9 +543,17 @@ ball_approach_decision_t ball_approach_step(
         if (new_frame && is_blue_goal(goal)) {
             controller->align_frames = 0;
             controller->search_motion_ms = 0;
-            enter_state(controller, &decision,
-                        BALL_APPROACH_STATE_PUSH_ALIGN,
-                        BALL_APPROACH_REASON_GOAL_SEEN, now_us);
+            if (controller->capture_frames >=
+                controller->config.capture_confirm_frames) {
+                enter_state(controller, &decision,
+                            BALL_APPROACH_STATE_PUSH_ALIGN,
+                            BALL_APPROACH_REASON_GOAL_SEEN, now_us);
+            } else if (is_target_ball(controller, ball)) {
+                begin_route_alignment(controller, &decision, now_us);
+            } else {
+                stop_for_unconfirmed_ball(
+                    controller, &decision, ball, now_us);
+            }
             break;
         }
         const bool left = controller->state ==
@@ -569,9 +588,17 @@ ball_approach_decision_t ball_approach_step(
         if (new_frame && is_blue_goal(goal)) {
             controller->align_frames = 0;
             controller->search_motion_ms = 0;
-            enter_state(controller, &decision,
-                        BALL_APPROACH_STATE_PUSH_ALIGN,
-                        BALL_APPROACH_REASON_GOAL_SEEN, now_us);
+            if (controller->capture_frames >=
+                controller->config.capture_confirm_frames) {
+                enter_state(controller, &decision,
+                            BALL_APPROACH_STATE_PUSH_ALIGN,
+                            BALL_APPROACH_REASON_GOAL_SEEN, now_us);
+            } else if (is_target_ball(controller, ball)) {
+                begin_route_alignment(controller, &decision, now_us);
+            } else {
+                stop_for_unconfirmed_ball(
+                    controller, &decision, ball, now_us);
+            }
         } else if (elapsed_us >=
                    controller->config.search_settle_ms * 1000LL) {
             enter_state(controller, &decision,
@@ -582,15 +609,15 @@ ball_approach_decision_t ball_approach_step(
 
     case BALL_APPROACH_STATE_ROUTE_ALIGN:
         if (!new_frame) break;
-        if (!is_red_ball(ball)) {
-            stop_for_unconfirmed_red(controller, &decision, ball, now_us);
+        if (!is_target_ball(controller, ball)) {
+            stop_for_unconfirmed_ball(controller, &decision, ball, now_us);
             break;
         }
         if (!is_blue_goal(goal)) {
             controller->align_frames = 0;
             controller->route_completed = false;
             enter_state(controller, &decision, BALL_APPROACH_STATE_ALIGN,
-                        BALL_APPROACH_REASON_ROUTE_BEST_EFFORT, now_us);
+                        BALL_APPROACH_REASON_GOAL_MISSING, now_us);
             break;
         }
         if (ball_is_inside_clip(controller, ball, red_error)) {
@@ -629,17 +656,18 @@ ball_approach_decision_t ball_approach_step(
 
     case BALL_APPROACH_STATE_ROUTE_SHIFT:
         if (new_frame) {
-            if (!is_red_ball(ball)) {
-                stop_for_unconfirmed_red(
+            if (!is_target_ball(controller, ball)) {
+                stop_for_unconfirmed_ball(
                     controller, &decision, ball, now_us);
                 break;
             }
             if (!is_blue_goal(goal)) {
                 controller->align_frames = 0;
                 controller->route_completed = false;
+                controller->settle_next_state = BALL_APPROACH_STATE_ALIGN;
                 enter_state(controller, &decision,
                             BALL_APPROACH_STATE_ALIGN_SETTLE,
-                            BALL_APPROACH_REASON_ROUTE_BEST_EFFORT, now_us);
+                            BALL_APPROACH_REASON_GOAL_MISSING, now_us);
                 break;
             }
             const int sample_direction = red_blue_error < 0 ? 1 :
@@ -664,13 +692,13 @@ ball_approach_decision_t ball_approach_step(
         break;
 
     case BALL_APPROACH_STATE_ROUTE_SETTLE:
-        if (new_frame && !is_red_ball(ball)) {
-            stop_for_unconfirmed_red(controller, &decision, ball, now_us);
+        if (new_frame && !is_target_ball(controller, ball)) {
+            stop_for_unconfirmed_ball(controller, &decision, ball, now_us);
         } else if (new_frame && !is_blue_goal(goal)) {
             controller->align_frames = 0;
             controller->route_completed = false;
             enter_state(controller, &decision, BALL_APPROACH_STATE_ALIGN,
-                        BALL_APPROACH_REASON_ROUTE_BEST_EFFORT, now_us);
+                        BALL_APPROACH_REASON_GOAL_MISSING, now_us);
         } else if (elapsed_us >=
                    controller->config.align_settle_ms * 1000LL) {
             enter_state(controller, &decision,
@@ -681,8 +709,8 @@ ball_approach_decision_t ball_approach_step(
 
     case BALL_APPROACH_STATE_ALIGN:
         if (!new_frame) break;
-        if (!is_red_ball(ball)) {
-            stop_for_unconfirmed_red(controller, &decision, ball, now_us);
+        if (!is_target_ball(controller, ball)) {
+            stop_for_unconfirmed_ball(controller, &decision, ball, now_us);
             break;
         }
         if (ball_is_inside_clip(controller, ball, red_error)) {
@@ -721,8 +749,8 @@ ball_approach_decision_t ball_approach_step(
 
     case BALL_APPROACH_STATE_ALIGN_PULSE:
         if (new_frame) {
-            if (!is_red_ball(ball)) {
-                stop_for_unconfirmed_red(
+            if (!is_target_ball(controller, ball)) {
+                stop_for_unconfirmed_ball(
                     controller, &decision, ball, now_us);
                 break;
             }
@@ -760,8 +788,8 @@ ball_approach_decision_t ball_approach_step(
         break;
 
     case BALL_APPROACH_STATE_ALIGN_SETTLE:
-        if (new_frame && !is_red_ball(ball)) {
-            stop_for_unconfirmed_red(controller, &decision, ball, now_us);
+        if (new_frame && !is_target_ball(controller, ball)) {
+            stop_for_unconfirmed_ball(controller, &decision, ball, now_us);
         } else if (new_frame && !controller->route_completed &&
                    is_blue_goal(goal)) {
             begin_route_alignment(controller, &decision, now_us);
@@ -774,14 +802,8 @@ ball_approach_decision_t ball_approach_step(
         break;
 
     case BALL_APPROACH_STATE_APPROACH:
-        if (now_us - controller->approach_started_us >=
-            controller->config.maximum_approach_ms * 1000LL) {
-            enter_anomaly_wait(controller, &decision,
-                           BALL_APPROACH_REASON_APPROACH_TIMEOUT, now_us);
-            break;
-        }
         if (new_frame) {
-            if (!is_red_ball(ball)) {
+            if (!is_target_ball(controller, ball)) {
                 /* Never move blindly around a nearby ball.  Stop now, wait,
                  * then restart acquisition instead of latching permanently. */
                 enter_anomaly_wait(controller, &decision,
@@ -830,7 +852,7 @@ ball_approach_decision_t ball_approach_step(
             }
         } else if (controller->capture_samples >=
                    controller->config.capture_verify_max_frames) {
-            if (is_red_ball(ball)) {
+            if (is_target_ball(controller, ball)) {
                 /* A visible ball that did not accumulate enough contact
                  * samples is still recoverable.  Return to the stopped ALIGN
                  * decision instead of searching or failing on one jittery
@@ -850,29 +872,22 @@ ball_approach_decision_t ball_approach_step(
 
     case BALL_APPROACH_STATE_PUSH_ALIGN:
         if (!new_frame) break;
-        if (!ball->candidate || ball->color != BALL_COLOR_RED) {
+        if (!ball->candidate || ball->color != controller->target_color) {
             enter_anomaly_wait(controller, &decision,
-                           BALL_APPROACH_REASON_LOST, now_us);
-            break;
-        }
-        if (ball_is_in_goal(controller, ball, goal)) {
-            controller->goal_frames = 1;
-            enter_state(controller, &decision,
-                        BALL_APPROACH_STATE_GOAL_VERIFY,
-                        BALL_APPROACH_REASON_GOAL_SEEN, now_us);
+                               BALL_APPROACH_REASON_LOST, now_us);
             break;
         }
         if (!is_blue_goal(goal)) {
             begin_goal_search(controller, &decision, false, now_us);
             break;
         }
-        if (abs(blue_error) <= controller->config.align_deadband_permille) {
+        if (abs(blue_error) <=
+            controller->config.push_align_deadband_permille) {
             if (controller->align_frames < UINT8_MAX) {
                 ++controller->align_frames;
             }
             if (controller->align_frames >=
-                controller->config.align_confirm_frames) {
-                controller->push_motion_started_us = now_us;
+                controller->config.push_align_confirm_frames) {
                 enter_state(controller, &decision,
                             BALL_APPROACH_STATE_PUSH,
                             BALL_APPROACH_REASON_PUSH_STARTED, now_us);
@@ -892,16 +907,9 @@ ball_approach_decision_t ball_approach_step(
 
     case BALL_APPROACH_STATE_PUSH_ALIGN_PULSE:
         if (new_frame) {
-            if (!ball->candidate || ball->color != BALL_COLOR_RED) {
+            if (!ball->candidate || ball->color != controller->target_color) {
                 enter_anomaly_wait(controller, &decision,
-                               BALL_APPROACH_REASON_LOST, now_us);
-                break;
-            }
-            if (ball_is_in_goal(controller, ball, goal)) {
-                controller->goal_frames = 1;
-                enter_state(controller, &decision,
-                            BALL_APPROACH_STATE_GOAL_VERIFY,
-                            BALL_APPROACH_REASON_GOAL_SEEN, now_us);
+                                   BALL_APPROACH_REASON_LOST, now_us);
                 break;
             }
             if (!is_blue_goal(goal)) {
@@ -910,7 +918,8 @@ ball_approach_decision_t ball_approach_step(
             }
             const int sample_direction = blue_error > 0 ? -1 :
                                          blue_error < 0 ? 1 : 0;
-            if (abs(blue_error) <= controller->config.align_deadband_permille ||
+            if (abs(blue_error) <=
+                    controller->config.push_align_deadband_permille ||
                 sample_direction != controller->turn_direction) {
                 enter_state(controller, &decision,
                             BALL_APPROACH_STATE_PUSH_ALIGN_SETTLE,
@@ -931,9 +940,9 @@ ball_approach_decision_t ball_approach_step(
 
     case BALL_APPROACH_STATE_PUSH_ALIGN_SETTLE:
         if (new_frame &&
-            (!ball->candidate || ball->color != BALL_COLOR_RED)) {
+            (!ball->candidate || ball->color != controller->target_color)) {
             enter_anomaly_wait(controller, &decision,
-                           BALL_APPROACH_REASON_LOST, now_us);
+                               BALL_APPROACH_REASON_LOST, now_us);
         } else if (new_frame && !is_blue_goal(goal)) {
             begin_goal_search(controller, &decision, false, now_us);
         } else if (elapsed_us >=
@@ -945,68 +954,24 @@ ball_approach_decision_t ball_approach_step(
         break;
 
     case BALL_APPROACH_STATE_PUSH:
-        if (new_frame) {
-            if (!ball->candidate || ball->color != BALL_COLOR_RED) {
-                enter_anomaly_wait(controller, &decision,
-                               BALL_APPROACH_REASON_LOST, now_us);
-                break;
-            }
-            if (ball_is_in_goal(controller, ball, goal)) {
-                controller->goal_frames = 1;
-                enter_state(controller, &decision,
-                            BALL_APPROACH_STATE_GOAL_VERIFY,
-                            BALL_APPROACH_REASON_GOAL_SEEN, now_us);
-                break;
-            }
-            if (!is_blue_goal(goal)) {
-                begin_goal_search(controller, &decision, true, now_us);
-                break;
-            }
-            if (abs(blue_error) >
-                controller->config.push_realign_threshold_permille) {
-                controller->align_frames = 0;
-                enter_state(controller, &decision,
-                            BALL_APPROACH_STATE_PUSH_ALIGN_SETTLE,
-                            BALL_APPROACH_REASON_REALIGN, now_us);
-                break;
-            }
-            controller->held_command = push_command(
-                controller, blue_error, now_us);
+        if (elapsed_us >= controller->config.push_boost_ms * 1000LL) {
+            enter_state(controller, &decision,
+                        BALL_APPROACH_STATE_DONE,
+                        BALL_APPROACH_REASON_GOAL_REACHED, now_us);
+        } else {
+            decision.command = kick_command(controller);
         }
-        decision.command = controller->held_command;
         break;
 
     case BALL_APPROACH_STATE_GOAL_VERIFY:
-        if (!new_frame) break;
-        if (ball_is_in_goal(controller, ball, goal)) {
-            if (controller->goal_frames < UINT8_MAX) {
-                ++controller->goal_frames;
-            }
-            if (controller->goal_frames >=
-                controller->config.goal_overlap_confirm_frames) {
-                enter_state(controller, &decision,
-                            BALL_APPROACH_STATE_DONE,
-                            BALL_APPROACH_REASON_GOAL_REACHED, now_us);
-            }
-        } else if (ball->candidate && ball->color == BALL_COLOR_RED) {
-            controller->goal_frames = 0;
-            controller->align_frames = 0;
-            enter_state(controller, &decision,
-                        BALL_APPROACH_STATE_PUSH_ALIGN,
-                        BALL_APPROACH_REASON_REALIGN, now_us);
-        } else {
-            enter_anomaly_wait(controller, &decision,
-                           BALL_APPROACH_REASON_LOST, now_us);
-        }
-        break;
-
     case BALL_APPROACH_STATE_RECOVERY_WAIT:
         /* All anomaly paths are stationary.  Once the requested pause has
          * elapsed and the camera is live again, restart the bounded search
          * from a clean controller state. */
         if (camera->fresh &&
             elapsed_us >= controller->config.recovery_wait_ms * 1000LL) {
-            ball_approach_start(controller, now_us);
+            ball_approach_start_for(controller, controller->target_color,
+                                    controller->goal_preference, now_us);
             decision.transitioned = true;
             decision.reason = BALL_APPROACH_REASON_STARTED;
         }

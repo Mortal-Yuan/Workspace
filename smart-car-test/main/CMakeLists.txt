@@ -4,6 +4,7 @@ idf_component_register(
         "app/app_config.c"
         "app/app_controller.c"
         "control/ball_approach.c"
+        "control/ball_mission.c"
         "control/camera_ball_vision.c"
         "control/camera_line_vision.c"
         "control/camera_preview.c"

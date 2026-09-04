@@ -191,9 +191,12 @@ static camera_ball_observation_t confirm_target(
         tracker->stable_frames = 0;
     }
     target.stable_frames = tracker->stable_frames;
-    const int required_frames = target.far_candidate ?
-        sensor->ball_config.far_confirm_frames :
-        sensor->ball_config.confirm_frames;
+    const int required_frames = target.color == BALL_COLOR_GREEN ?
+        sensor->ball_config.green_confirm_frames :
+        target.color == BALL_COLOR_BLUE ?
+            sensor->ball_config.blue_target_confirm_frames :
+        target.far_candidate ? sensor->ball_config.far_confirm_frames :
+                               sensor->ball_config.confirm_frames;
     target.detected = target.candidate &&
         target.stable_frames >= required_frames;
     return target;
@@ -202,6 +205,7 @@ static camera_ball_observation_t confirm_target(
 static void publish_analysis(
     camera_line_sensor_t *sensor, camera_line_analysis_t analysis,
     camera_ball_observation_t red_ball,
+    camera_ball_observation_t green_ball,
     camera_ball_observation_t left_target,
     camera_ball_observation_t right_target, int64_t now_us)
 {
@@ -286,11 +290,14 @@ static void publish_analysis(
     sensor->snapshot.threshold = analysis.threshold;
     sensor->snapshot.contrast = analysis.contrast;
     red_ball = confirm_target(sensor, red_ball, &sensor->red_tracker);
+    green_ball = confirm_target(
+        sensor, green_ball, &sensor->green_tracker);
     left_target = confirm_target(
         sensor, left_target, &sensor->left_target_tracker);
     right_target = confirm_target(
         sensor, right_target, &sensor->right_target_tracker);
     sensor->snapshot.ball = red_ball;
+    sensor->snapshot.green_ball = green_ball;
     sensor->snapshot.left_target = left_target;
     sensor->snapshot.right_target = right_target;
     sensor->snapshot.updated_us = now_us;
@@ -339,7 +346,7 @@ static void decode_task(void *argument)
                 sensor->history_steering_permille;
             portEXIT_CRITICAL(&sensor->lock);
             const camera_line_analysis_t analysis =
-                camera_line_analyze_lower_half_rgb888_with_hint(
+                camera_line_analyze_rgb888_with_hint(
                     sensor->rgb_buffer, output.width, output.height, false,
                     &sensor->config, sensor->vision_workspace,
                     has_previous_line, previous_center_permille,
@@ -348,6 +355,11 @@ static void decode_task(void *argument)
                 camera_ball_analyze_color_rgb888(
                     sensor->rgb_buffer, output.width, output.height, false,
                     BALL_COLOR_RED,
+                    &sensor->ball_config, sensor->ball_workspace);
+            camera_ball_observation_t green_ball =
+                camera_ball_analyze_color_rgb888(
+                    sensor->rgb_buffer, output.width, output.height, false,
+                    BALL_COLOR_GREEN,
                     &sensor->ball_config, sensor->ball_workspace);
             camera_blue_target_pair_t blue_targets =
                 camera_blue_targets_analyze_rgb888(
@@ -360,11 +372,12 @@ static void decode_task(void *argument)
             portEXIT_CRITICAL(&sensor->lock);
             const int64_t decoded_us = esp_timer_get_time();
             if (analysis.valid) {
-                publish_analysis(sensor, analysis, red_ball,
+                publish_analysis(sensor, analysis, red_ball, green_ball,
                                  blue_targets.left_target,
                                  blue_targets.right_target, decoded_us);
                 portENTER_CRITICAL(&sensor->lock);
                 red_ball = sensor->snapshot.ball;
+                green_ball = sensor->snapshot.green_ball;
                 blue_targets.left_target = sensor->snapshot.left_target;
                 blue_targets.right_target = sensor->snapshot.right_target;
                 portEXIT_CRITICAL(&sensor->lock);
@@ -392,7 +405,9 @@ static void decode_task(void *argument)
             if (publish_preview && camera_preview_build_rgb332(
                     sensor->preview_packet, sensor->rgb_buffer,
                     output.width, output.height, &sensor->config,
-                    &analysis, &red_ball, &blue_targets.left_target,
+                    &analysis,
+                    red_ball.candidate ? &red_ball : &green_ball,
+                    &blue_targets.left_target,
                     &blue_targets.right_target, preview_sequence,
                     (uint32_t)(decoded_us / 1000))) {
                 sensor->preview_sink(sensor->preview_sink_context,

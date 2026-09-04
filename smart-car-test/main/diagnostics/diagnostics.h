@@ -12,8 +12,8 @@
 #include "freertos/task.h"
 
 #define DIAGNOSTICS_CRITICAL_DEPTH 16
-#define DIAGNOSTICS_MESSAGE_MAX 1024
-#define DIAGNOSTICS_TASK_STACK 4096
+#define DIAGNOSTICS_MESSAGE_MAX 1280
+#define DIAGNOSTICS_TASK_STACK 6144
 
 typedef struct {
     char fault_current[DIAGNOSTICS_MESSAGE_MAX];

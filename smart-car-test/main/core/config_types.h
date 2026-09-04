@@ -77,6 +77,14 @@ typedef struct {
     int red_ratio_permille;
     int strong_red_dominance;
     int strong_red_ratio_permille;
+    /* The live green ball is dark teal: green stays above red while blue may
+     * exceed green slightly. Weak and strong gates are calibrated separately. */
+    int green_minimum;
+    int green_red_dominance;
+    int green_blue_tolerance;
+    int strong_green_minimum;
+    int strong_green_red_dominance;
+    int strong_green_blue_tolerance;
     /* Blue uses the same seeded-component pipeline, with thresholds calibrated
      * independently from the live 80x60 image. */
     int blue_minimum;
@@ -87,6 +95,8 @@ typedef struct {
     int minimum_strong_pixels;
     int minimum_strong_ratio_permille;
     int minimum_mean_red_dominance;
+    int minimum_mean_green_red_dominance;
+    int maximum_mean_green_blue_excess;
     int minimum_mean_blue_dominance;
     int minimum_area_permille;
     /* A very small, high-confidence component is accepted only as a far
@@ -96,6 +106,13 @@ typedef struct {
     int minimum_fill_permille;
     int minimum_roundness_permille;
     int minimum_blue_roundness_permille;
+    /* The initial green ball is only about 4x4 pixels at the search distance,
+     * so admit a tiny but seeded, round component with slower confirmation. */
+    int green_far_minimum_pixels;
+    int green_far_minimum_strong_pixels;
+    int green_far_minimum_confidence_permille;
+    int green_far_minimum_roundness_permille;
+    int green_confirm_frames;
     /* Blue destination patches may be only a few decoded pixels at long
      * range.  Keep their raw-pixel gate separate from the red-ball area gate
      * and require a strong, high-confidence connected component. */
@@ -104,6 +121,9 @@ typedef struct {
     int blue_target_minimum_mean_dominance;
     int blue_target_minimum_confidence_permille;
     int blue_target_minimum_roundness_permille;
+    /* Blue field patches use their own temporal gate so distant-goal
+     * recognition can be relaxed without weakening far red-ball filtering. */
+    int blue_target_confirm_frames;
     /* Bright low-chroma pixels are admitted only when locally surrounded by
      * same-color support.  This repairs specular holes without making white
      * objects independent ball candidates. */
@@ -126,6 +146,9 @@ typedef struct {
     int route_pulse_ms;
     int route_confirm_frames;
     int route_align_timeout_ms;
+    /* A locked blue goal may cross the image center, but it cannot jump to a
+     * distant second patch in one decoded frame. */
+    int goal_tracking_tolerance_permille;
     int align_deadband_permille;
     int realign_threshold_permille;
     int steering_gain_permille;
@@ -145,6 +168,9 @@ typedef struct {
     int medium_forward_speed;
     int near_forward_speed;
     int forward_boost_speed;
+    /* During the initial loaded launch pulse, preserve steering while making
+     * sure even the weaker A/C wheel clears its static-friction threshold. */
+    int forward_boost_min_wheel_speed;
     int forward_boost_ms;
     int medium_y_permille;
     int near_y_permille;
@@ -154,7 +180,6 @@ typedef struct {
     int capture_box_bottom_permille;
     int capture_confirm_frames;
     int capture_verify_max_frames;
-    int maximum_approach_ms;
     /* Once the ball is in the clip, steer on the blue goal while pushing. */
     int push_speed;
     int push_boost_speed;
@@ -162,12 +187,35 @@ typedef struct {
     int push_steering_gain_permille;
     int push_maximum_correction;
     int push_realign_threshold_permille;
+    /* Final blue-goal alignment has a wider, faster confirmation than the
+     * earlier ball-centering phase so visual jitter cannot postpone a kick. */
+    int push_align_deadband_permille;
+    int push_align_confirm_frames;
+    /* The passive front guide does not retain a ball.  After confirmed
+     * contact, accept a ball rolling away only after sufficient forward image
+     * displacement and several stopped frames without a confirmed ball. */
+    int delivery_rollaway_minimum_permille;
+    int delivery_occlusion_confirm_frames;
     int push_timeout_ms;
     int goal_overlap_margin_permille;
     int goal_overlap_confirm_frames;
     int maximum_total_ms;
     int recovery_wait_ms;
 } ball_approach_config_t;
+
+typedef struct {
+    /* Hold zero output after red delivery, back away from the goal, execute
+     * one fixed clockwise turn, then begin green-ball acquisition. */
+    int transition_settle_ms;
+    int red_exit_reverse_speed;
+    int red_exit_reverse_boost_speed;
+    int red_exit_reverse_boost_ms;
+    int red_exit_reverse_ms;
+    int red_exit_reverse_settle_ms;
+    int green_entry_right_turn_speed;
+    int green_entry_right_turn_ms;
+    int green_entry_turn_settle_ms;
+} ball_mission_config_t;
 
 typedef struct {
     int timeout_us;
@@ -190,6 +238,8 @@ typedef struct {
     int lateral_start_speed;
     int motion_boost_ms;
     int left_strafe_ms;
+    int left_heading_trim_speed;
+    int left_heading_trim_ms;
     int forward_speed;
     int forward_start_speed;
     int forward_drive_ms;

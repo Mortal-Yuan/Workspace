@@ -17,6 +17,7 @@ import threading
 import time
 import zlib
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import serial
@@ -58,7 +59,7 @@ BALL_APPROACH_REASON_NAMES = (
     "None", "Started", "Search reverse", "Candidate", "Confirmed",
     "Blue goal missing", "Route shift", "Route aligned",
     "Route best effort", "Alignment pulse", "Aligned", "Realign",
-    "Red ball lost", "Capture seen", "Capture confirmed", "Push started",
+    "Target ball lost", "Capture seen", "Capture confirmed", "Push started",
     "Goal seen", "Goal reached", "Camera stale", "Acquire timeout",
     "Approach timeout", "Push timeout", "Total timeout",
 )
@@ -71,8 +72,15 @@ BALL_APPROACH_NAMES = (
     "Route lateral pulse", "Route settle", "Align red ball",
     "Red alignment pulse", "Red alignment settle", "Approach red ball",
     "Verify ball in clip", "Align blue goal", "Goal alignment pulse",
-    "Goal alignment settle", "Push ball", "Verify ball in goal",
+    "Goal alignment settle", "Fixed 500 ms kick", "Legacy verify (unused)",
     "Done", "Failsafe", "Anomaly wait",
+)
+
+BALL_MISSION_NAMES = (
+    "Idle", "Red to left goal", "Transition settle",
+    "Green to right goal", "Done", "Failsafe",
+    "Right turn about 60 deg", "Turn settle",
+    "Reverse about 8 cm", "Reverse settle",
 )
 
 
@@ -383,7 +391,10 @@ RGB332_TABLE = tuple(bytes((
 
 class MonitorWindow:
     def __init__(self, root, port: str, worker: SerialWorker,
-                 messages: queue.Queue[tuple[str, object]]) -> None:
+                 messages: queue.Queue[tuple[str, object]],
+                 auto_autonomous_test: bool = False,
+                 auto_ball_mission_test: bool = False,
+                 log_file: Optional[Path] = None) -> None:
         import tkinter as tk
         from tkinter import ttk
 
@@ -397,6 +408,12 @@ class MonitorWindow:
         self.photo = None
         self.latest_frame: Optional[PreviewFrame] = None
         self.latest_status: dict[str, str] = {}
+        self.log_file = log_file
+        self.mission_safety_armed = False
+        self.mission_stop_sent = False
+        if self.log_file is not None:
+            self.log_file.parent.mkdir(parents=True, exist_ok=True)
+            self.log_file.write_text("", encoding="utf-8")
 
         root.title("小车 USB 摄像头与状态监控")
         root.configure(bg="#15191f")
@@ -450,6 +467,20 @@ class MonitorWindow:
             font=("Microsoft YaHei UI", 11, "bold"), padx=14, pady=7)
         self.ball_button.pack(side="left")
 
+        self.mission_button = tk.Button(
+            ball_row, text="红球→左蓝区，绿球→右蓝区  n",
+            command=lambda: worker.send(b"n"),
+            bg="#b45309", fg="white", activebackground="#d97706",
+            font=("Microsoft YaHei UI", 10, "bold"), padx=10, pady=7)
+        self.mission_button.pack(side="left", padx=8)
+
+        self.autonomous_button = tk.Button(
+            ball_row, text="巡线避障 + 3秒 + 双球  f",
+            command=self.start_autonomous_test,
+            bg="#1d4ed8", fg="white", activebackground="#2563eb",
+            font=("Microsoft YaHei UI", 11, "bold"), padx=14, pady=7)
+        self.autonomous_button.pack(side="left")
+
         button_row = ttk.Frame(right)
         button_row.pack(fill="x", pady=(8, 8))
         self.stop_button = tk.Button(
@@ -475,6 +506,33 @@ class MonitorWindow:
 
         self.last_status_log = 0.0
         self.root.after(30, self.poll)
+        if auto_autonomous_test:
+            self.root.after(2000, self.start_autonomous_test)
+        if auto_ball_mission_test:
+            self.root.after(2000, self.start_ball_mission_test)
+
+    def start_autonomous_test(self) -> None:
+        """Clear encoders and start the combined line/avoidance/ball task."""
+        self.append_log(
+            "HOST complete task: line/avoidance, 3 s stop, then two-ball mission")
+        self.worker.send(b"x")
+        self.root.after(200, lambda: self.worker.send(b"c"))
+        self.root.after(700, lambda: self.worker.send(b"f"))
+
+    def start_ball_mission_test(self) -> None:
+        """Start one bounded two-ball mission with GUI-visible telemetry."""
+        self.append_log("HOST mission test: stop, then send n")
+        self.worker.send(b"x")
+        self.mission_safety_armed = True
+        self.mission_stop_sent = False
+        self.root.after(500, lambda: self.worker.send(b"n"))
+        self.root.after(100500, self.stop_mission_on_timeout)
+
+    def stop_mission_on_timeout(self) -> None:
+        if self.mission_safety_armed and not self.mission_stop_sent:
+            self.append_log("HOST SAFETY: 100 s mission timeout; send x")
+            self.worker.send(b"x")
+            self.mission_stop_sent = True
 
     def append_log(self, line: str) -> None:
         self.log.configure(state="normal")
@@ -484,6 +542,9 @@ class MonitorWindow:
             self.log.delete("1.0", f"{line_count - 100}.0")
         self.log.see("end")
         self.log.configure(state="disabled")
+        if self.log_file is not None:
+            with self.log_file.open("a", encoding="utf-8") as stream:
+                stream.write(line + "\n")
 
     @staticmethod
     def _named(value: str, names: tuple[str, ...]) -> str:
@@ -504,8 +565,19 @@ class MonitorWindow:
             ball_control_fields[0] if ball_control_fields else "?",
             BALL_APPROACH_NAMES)
         ball_reason = self._named(
-            ball_control_fields[4] if len(ball_control_fields) > 4 else "?",
+            ball_control_fields[5] if len(ball_control_fields) > 5 else "?",
             BALL_APPROACH_REASON_NAMES)
+        mission = self._named(values.get("mission", "?"), BALL_MISSION_NAMES)
+        if (self.mission_safety_armed and not self.mission_stop_sent and
+                values.get("mode") == "MISSION"):
+            if values.get("fresh") == "0" or values.get("mission") == "5":
+                self.append_log("HOST SAFETY: vision/failsafe; send x")
+                self.worker.send(b"x")
+                self.mission_stop_sent = True
+            elif values.get("mission") == "4":
+                self.append_log("HOST mission complete; send x")
+                self.worker.send(b"x")
+                self.mission_stop_sent = True
         ball_fields = values.get("BALL", "?").split("/")
         if len(ball_fields) == 4:
             ball_state = ("已确认" if ball_fields[2] == "1" else
@@ -514,6 +586,11 @@ class MonitorWindow:
         else:
             ball_text = values.get("BALL", "?")
         ball_text += (
+            f"  GREEN={values.get('GREEN', '?')}"
+            f" xy={values.get('gxy', '?')}"
+            f" pixels={values.get('gpix', '?')}"
+            f" rgb={values.get('grgb', '?')}"
+            f" box={values.get('gbbox', '?')}\n"
             f"  LEFT_TARGET={values.get('LEFT_TARGET', '?')}"
             f" xy={values.get('lxy', '?')}"
             f" pixels={values.get('lpix', '?')}"
@@ -527,10 +604,12 @@ class MonitorWindow:
             f"模式       {values.get('mode', '?')}\n"
             f"避障状态   {obstacle}\n"
             f"启动动作   {startup}\n"
-            f"推球控制   {ball_control}  err/cap/goal="
+            f"双球任务   {mission}\n"
+            f"推球控制   {ball_control}  color/err/cap/goal="
             f"{ball_control_fields[1] if len(ball_control_fields) > 1 else '?'}/"
             f"{ball_control_fields[2] if len(ball_control_fields) > 2 else '?'}/"
-            f"{ball_control_fields[3] if len(ball_control_fields) > 3 else '?'}"
+            f"{ball_control_fields[3] if len(ball_control_fields) > 3 else '?'}/"
+            f"{ball_control_fields[4] if len(ball_control_fields) > 4 else '?'}"
             f"  reason={ball_reason}\n"
             f"巡线状态   {line_state}   CAM={values.get('CAM', '?')}\n"
             f"线路几何   pos={values.get('pos', '?')}  far={values.get('far', '?')}\n"
@@ -677,6 +756,15 @@ def main() -> int:
                                  help="仅运行协议解析自测")
     argument_parser.add_argument("--probe-seconds", type=float,
                                  help="连接实车并命令行验证指定秒数，不打开窗口")
+    argument_parser.add_argument(
+        "--autonomous-test", action="store_true",
+        help="Open the window and automatically start the complete line test")
+    argument_parser.add_argument(
+        "--ball-mission-test", action="store_true",
+        help="Open the window and automatically start one bounded two-ball mission")
+    argument_parser.add_argument(
+        "--log-file", type=Path,
+        help="Write GUI event/status lines to this UTF-8 file")
     args = argument_parser.parse_args()
     if args.self_test:
         run_self_test()
@@ -697,7 +785,10 @@ def main() -> int:
     messages: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=128)
     worker = SerialWorker(port, connection, messages)
     root = tk.Tk()
-    MonitorWindow(root, port, worker, messages)
+    MonitorWindow(root, port, worker, messages,
+                  auto_autonomous_test=args.autonomous_test,
+                  auto_ball_mission_test=args.ball_mission_test,
+                  log_file=args.log_file)
     worker.start()
     try:
         root.mainloop()

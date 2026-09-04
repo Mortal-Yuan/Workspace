@@ -48,9 +48,9 @@ The serial port is machine-specific; the board was detected as `COM3` on
 | `1` | Run motor A / right wheel only |
 | `2` | Run motor B / rear wheel only |
 | `3` | Run motor C / left wheel only |
-| `BOOT` | Start the fixed entry maneuver, then line-follow + obstacle supervisor |
+| `BOOT` | Start the complete line/avoidance task, pause 3 s, then run the two-ball mission |
 | `RESET` | Hardware-reset the controller and stop the car |
-| `f` | Start/restart the fixed entry maneuver, then autonomous line following |
+| `f` | Start/restart the complete line/avoidance + 3 s pause + two-ball task |
 | `t` / `y` | Directly run the pure right/left three-wheel vector at 420 for 100 ms, then stop |
 | `q` | Candidate left strafe at 380/1000 for 1000 ms, then stop |
 | `e` | Candidate right strafe at 380/1000 for 1000 ms, then stop |
@@ -69,6 +69,7 @@ The serial port is machine-specific; the board was detected as `COM3` on
 | `u` | Enable the CRC-protected USB-UART camera preview and switch to 460800 bit/s |
 | `z` | Disable the preview and return the application UART to 115200 bit/s |
 | `b` | From `IDLE`, start the standalone red/blue-target align/approach/capture test |
+| `n` | From `IDLE`, start the red-to-left then green-to-right two-ball mission |
 
 The current `a` and `d` commands are legacy, uncalibrated combinations and
 must not be used as kiwi-drive strafe commands. Use only the bounded `q/e`
@@ -89,31 +90,57 @@ A/B/C encoder counts every 500 ms.
 
 The standalone `b` mode is deliberately separate from line following and
 obstacle avoidance. It always starts by searching left and then right for the
-red ball. During that search, the first blue component to become stably
-detected is remembered as the preferred delivery target, regardless of which
-side of the image contains it. If two blue components become available in the
-same frame, stable-frame history and confidence choose between them; subsequent
-frames use continuity rather than screen side to retain the chosen target.
-Search uses short fast yaw pulses with a stopped camera observation after every
-small angular step. Red-ball alignment and post-capture blue-target search use
-the same 80 ms turn / 200 ms stopped-observation cadence. If the preferred blue
-destination is already visible, short stopped-frame kiwi lateral
-pulses first place the ball and target on approximately the same viewing ray.
-If the destination is not visible, it does not wait: yaw pulses align the red
-ball with the calibrated clip axis and the car approaches at decreasing speed.
-If the preferred target becomes confirmed during alignment or forward approach, the
-current motion stops and the controller immediately restores simultaneous
-ball/target route pre-alignment; reaching the clip is not required first.
-After two stationary in-clip observations, a missing destination starts an
-alternating pulsed left/stop/right target search. Once either target is found,
-the car aligns it with the clip axis using repeated 80 ms lateral shifts and
-200 ms stopped observations, then starts pushing with a 420-command 180 ms
-breakaway pulse, continues at 300, and stops on the
-first red-center-inside-blue-box observation for two more stationary
-confirmations (three total) before
-`BALL_DONE`. Policy anomalies enter a two-second stationary recovery rather
-than latching ball-mode failsafe. Press `x` to leave the mode. This mode is not
-yet chained after obstacle `FINISHED`.
+red ball. Before the destination is locked, it accepts only a confirmed blue
+component in the positional-left slot. This prevents the visible right goal
+from being selected while the left goal is still distant, hidden by the red
+ball, or represented by too few pixels. Once locked, frame-to-frame continuity
+retains the same physical goal if it crosses the image center during steering.
+Blue destinations may be accepted down to two matched pixels with one strong
+blue seed, but they must remain on the same tracked component for three
+consecutive decoded frames. Search uses short fast yaw pulses with a stopped
+camera observation after every small angular step. If the preferred blue
+destination is visible, short stopped-frame kiwi lateral pulses place the ball
+and target on approximately the same viewing ray. If it is absent or is lost
+during that route correction, the controller resumes ball centering and may
+approach without waiting for a blue target. A target that becomes visible later
+preempts the approach and starts route correction; a route timeout continues
+with best-effort ball alignment instead of stationary recovery. The car then
+approaches at 300, then 250, then 300 command. Every stopped-to-approach transition first applies a 300 ms
+loaded launch pulse around 450 command. It preserves the steering differential
+but raises the common drive component as needed so the weaker A/C wheel remains
+at or above 400. This directly addresses the observed zero-encoder stall at
+actual wheel commands 282/318 and the ineffective former 360/100 ms pulse.
+Forward ball approach has no fixed phase timeout: as long as camera frames and
+the selected ball remain valid it may continue through a slow loaded movement.
+Camera-stale, ball-loss, push, and whole-run safety handling remain active.
+After two stationary contact observations, the controller reacquires the
+preferred blue destination if necessary and requires two observations within
++/-100 permille before kicking. The fixed kick uses
+500/1000 command for 500 ms and ignores all subsequent
+ball, goal, and camera observations; at the time boundary it stops and declares
+the current color complete without overlap, roll-away, or occlusion checks.
+Contact verification begins in the calibrated released-contact band (center-y
+at least 600 permille and box bottom at least 680 permille), still requiring
+sufficient blob size, horizontal alignment, and two stopped observations.
+Loss before the kick begins remains a policy anomaly and enters a two-second
+stationary recovery. Press `x` to leave the mode.
+
+The `n` command runs the separate two-ball mission. Its first phase reuses the
+standalone controller as red-ball-to-left-goal. Immediately after the fixed red
+kick it resets the ball controller and holds zero motor output for 500 ms. It
+then backs away from the left goal for an open-loop estimate of 16 cm: 860 ms
+with `A/B/C=+400/0/+400`, using 500 for the first 150 ms to break loaded static
+friction. After a 150 ms stop, it applies the unchanged clockwise pure-yaw
+vector `A/B/C=+420/-420/-420` for 200 ms (the open-loop estimate for about 60
+degrees), stops for another 300 ms, and only then enables green-ball vision. The second phase selects the
+independent green observation, accepts only the right-side blue goal before
+target lock, and begins with the existing camera-guided rightward pulse/stop
+search if the green ball is not already confirmed.
+Green uses the same align-and-fixed-kick rule. Completion of its 500 ms kick
+latches `MISSION_DONE` at zero output. `x` preempts either phase and returns to
+`IDLE`. The same mission now starts automatically three seconds after the
+line-follow/obstacle supervisor reaches `FINISHED`; command `n` remains
+available for standalone ball-task testing.
 
 ## USB Camera Monitor
 
@@ -138,8 +165,8 @@ rectangle or occupies only a few decoded pixels. The state panel reports
 separate `BALL`, `LEFT_TARGET`, and `RIGHT_TARGET` observations plus strong-color
 seed counts and exact pixel boxes. The red `Emergency stop`
 button sends `x` immediately. The green `Start ball and push to blue goal`
-button sends `b`;
-it is accepted only while the top-level mode is `IDLE`.
+button sends `b`; the orange two-ball mission button sends `n`. Both are
+accepted only while the top-level mode is `IDLE`.
 
 The target mask uses hysteresis segmentation. Red uses permissive R>=45,
 R-max(G,B)>=8, and R/RGB>=380-permille pixels preserve weak edges, but a blob
@@ -158,7 +185,10 @@ when confidence is at least 900 and requires five stable frames. The decoder
 runs the same seeded-component pipeline independently for red and blue, so one
 high-confidence goal cannot replace the red-ball observation. Target telemetry
 does not affect line-follow or obstacle arbitration; only the explicitly
-started standalone `BALL` mode may turn it into a motor command.
+started standalone `BALL` or two-ball `MISSION` mode may turn it into a motor
+command. Green is tracked independently with the field-calibrated dark-teal
+gates G>=55, G-R>=18 and B-G<=20. Its compact far candidate may contain four
+matched pixels with two strong seeds, but still needs three stable frames.
 
 The application UART normally remains at 115200 bit/s. The monitor sends `u`,
 waits for a low-rate acknowledgement, and then switches both ends to 460800
@@ -293,46 +323,53 @@ STATUS t=12450ms mode=AUTO obstacle=1 progress=0 IR=0110 pattern=6 line=1 err=0/
 
 The fixed-segment rectangular bypass state machine is enabled for bounded field
 calibration. Lateral directions are physically confirmed, but the current
-1030/1074/1097 ms segments still require ruler calibration.
+1468/1243/625 ms segments still require ruler calibration.
 
 ```text
-SENSOR_CHECK -> CLEAR -> first real Echo from 20 through 80 mm -> BRAKE
-BRAKE -> LEFT_STRAFE -> SETTLE_FORWARD -> FORWARD_TIMED
--> SETTLE_RIGHT -> RIGHT_RAMP (full 1097 ms)
--> FINAL_FORWARD_525MS -> FINISHED (latched stop)
+SENSOR_CHECK -> CLEAR -> first real Echo from 20 through 110 mm -> BRAKE
+BRAKE -> LEFT_STRAFE -> SETTLE_LEFT_TRIM -> LEFT_HEADING_TRIM
+-> SETTLE_FORWARD -> FORWARD_TIMED
+-> SETTLE_RIGHT -> RIGHT_RAMP (full 625 ms)
+-> FINAL_FORWARD_525MS -> FINISHED (3 s stopped handoff)
+-> red/green two-ball mission
 ```
 
 `SENSOR_CHECK` keeps all motors stopped until three consecutive valid far-Echo
 or clean no-return observations are available. While line following in `CLEAR`,
-the first real Echo pulse with a raw distance from 20 through 80 mm immediately
+the first real Echo pulse with a raw distance from 20 through 110 mm immediately
 writes all motor commands to zero
 and enters `BRAKE`; it does not wait for the median or jump filter to accept the
 sudden near reading. Every other ultrasonic result—including clean distance
 jumps, no Echo, `LOST`, `NO_RETURN`, Echo-high and malformed-edge diagnostics—
 is diagnostic-only and cannot alter line following.
 
-The active sequence is: brake, strafe left for 1030 ms, settle, move forward
-for 1074 ms, settle, then strafe right for 1097 ms. The middle forward segment
-is 30% longer than the preceding 826 ms setting (1073.8 ms rounded to 1074 ms);
-other timings remain unchanged. The obstacle trigger is 80 mm, 20 mm farther than
-the preceding 60 mm setting.
+The active sequence is: brake for 150 ms, strafe left for 1468 ms, stop for 150
+ms, apply a 460-command counter-clockwise heading trim for 60 ms, stop for
+another 150 ms, move forward for 1243 ms, settle, then strafe right for 625
+ms. The trim uses `A/B/C=-460/+460/+460` and is deliberately stronger and
+longer than the preceding 420/40 ms trial. It counters the observed clockwise
+slip at the end of left strafe. No heading trim is applied when avoidance is
+first triggered. The
+middle forward segment is 5% longer than its preceding 1184 ms setting. The
+obstacle trigger is 110 mm, 30 mm farther than the preceding 80 mm setting.
 Left strafe retains the 380 steady / 500 start-boost body commands, and forward
 retains 400/500. Right strafe instead starts at 300 and linearly rises to 380
 over 400 ms. During the same interval a small counter-clockwise body-yaw command
 fades from -60 to zero, changing the launch wheel command from
 `+300/+460/-300` to about `+300/+510/-300`; the established steady output
-remains `+300/+570/-300`. Its 1097 ms duration is unchanged. Once
+remains `+300/+570/-300`. Its duration is shortened 40% from 1042 to 625 ms. Once
 `BRAKE` starts, line following remains suspended: black, white and `1111`
 camera patterns cannot shorten the right strafe or alter the remaining motion.
 After the full right strafe, the controller drives straight with the fixed
-500/400 start/steady commands for 525 ms, then enters the latched `FINISHED`
-stop. A new near obstacle or repeated ultrasonic uncertainty during these fixed
+500/400 start/steady commands for 525 ms, then enters `FINISHED`, holds all
+motors at zero for 3000 ms, and automatically begins the red/green two-ball
+mission when the camera remains fresh. A new near obstacle or repeated ultrasonic uncertainty during these fixed
 segments still enters the latched fail-safe.
 
 The candidate left strafe uses all three wheels as
 `A=-0.866S, B=-S, C=+0.866S`; right strafe is its exact inverse. This result is
 derived from the verified forward/clockwise bases and the 120-degree chassis
-geometry, then corrected with independently configurable 50% left and 50%
+geometry, then corrected with independently configurable 20% left and 50%
 right yaw compensation, plus per-direction dead-zone floors. See
 [三轮横移标定与矩形避障实施计划.md](三轮横移标定与矩形避障实施计划.md) for the acceptance
 criteria and measurement table.

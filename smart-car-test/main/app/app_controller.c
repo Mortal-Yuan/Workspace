@@ -32,6 +32,7 @@ typedef struct {
     bool preview_enable;
     bool preview_disable;
     bool ball_approach;
+    bool ball_mission;
 } command_intents_t;
 
 static void enable_status_display(app_controller_t *controller)
@@ -165,6 +166,7 @@ static void start_autonomy(app_controller_t *controller, int64_t now_us,
     obstacle_supervisor_reset(&controller->obstacle);
     startup_maneuver_reset(&controller->startup_maneuver);
     ball_approach_reset(&controller->ball_approach);
+    ball_mission_reset(&controller->ball_mission);
     ultrasonic_restart_session(&controller->ultrasonic, now_us);
     controller->mode = APP_MODE_AUTONOMOUS;
     publish_event(controller, DIAGNOSTIC_EVENT_MODE,
@@ -197,6 +199,7 @@ static command_intents_t parse_commands(command_batch_t batch,
         case 'u': intents.preview_enable = true; break;
         case 'z': intents.preview_disable = true; break;
         case 'b': intents.ball_approach = true; break;
+        case 'n': intents.ball_mission = true; break;
         default: break;
         }
     }
@@ -206,16 +209,23 @@ static command_intents_t parse_commands(command_batch_t batch,
         intents.motion = 0;
         intents.self_test = 0;
         intents.ball_approach = false;
+        intents.ball_mission = false;
     } else if (intents.force_auto) {
         intents.boot = false;
         intents.motion = 0;
         intents.self_test = 0;
         intents.ball_approach = false;
+        intents.ball_mission = false;
     } else if (intents.boot) {
         intents.motion = 0;
         intents.self_test = 0;
         intents.ball_approach = false;
+        intents.ball_mission = false;
     } else if (intents.ball_approach) {
+        intents.motion = 0;
+        intents.self_test = 0;
+        intents.ball_mission = false;
+    } else if (intents.ball_mission) {
         intents.motion = 0;
         intents.self_test = 0;
     }
@@ -253,6 +263,7 @@ static void start_ball_approach(app_controller_t *controller,
     controller->manual_command = motor_command_zero();
     controller->self_test = (self_test_t) {0};
     line_follow_suspend(&controller->line_follow);
+    ball_mission_reset(&controller->ball_mission);
     ball_approach_start(&controller->ball_approach, now_us);
     ultrasonic_restart_session(&controller->ultrasonic, now_us);
     controller->mode = APP_MODE_BALL_APPROACH;
@@ -260,6 +271,55 @@ static void start_ball_approach(app_controller_t *controller,
                   APP_MODE_BALL_APPROACH, 0,
                   "ball_approach_start", now_us);
     enable_status_display(controller);
+}
+
+static void start_ball_mission(app_controller_t *controller,
+                               int64_t now_us)
+{
+    if (controller->mode != APP_MODE_IDLE ||
+        controller->fault_bitmap != 0 || !controller->latest_camera.fresh) {
+        publish_event(controller, DIAGNOSTIC_EVENT_BALL_MISSION,
+                      ESP_ERR_INVALID_STATE, 0,
+                      controller->mode != APP_MODE_IDLE ?
+                          "mission_start_requires_idle" :
+                      controller->fault_bitmap != 0 ?
+                          "mission_start_fault" : "mission_camera_not_ready",
+                      now_us);
+        return;
+    }
+    controller->manual_command = motor_command_zero();
+    controller->self_test = (self_test_t) {0};
+    line_follow_suspend(&controller->line_follow);
+    ball_mission_start(&controller->ball_mission,
+                       &controller->ball_approach, now_us);
+    ultrasonic_restart_session(&controller->ultrasonic, now_us);
+    controller->mode = APP_MODE_BALL_MISSION;
+    publish_event(controller, DIAGNOSTIC_EVENT_MODE,
+                  APP_MODE_BALL_MISSION, 0,
+                  "ball_mission_start", now_us);
+    enable_status_display(controller);
+}
+
+static void start_chained_ball_mission_if_ready(
+    app_controller_t *controller, int64_t now_us)
+{
+    if (controller->mode != APP_MODE_AUTONOMOUS ||
+        controller->obstacle.state != OBSTACLE_STATE_FINISHED ||
+        now_us - controller->obstacle.phase_started_us <
+            controller->config->post_autonomy_ball_delay_ms * 1000LL ||
+        controller->fault_bitmap != 0 ||
+        !controller->latest_camera.fresh) {
+        return;
+    }
+
+    /* FINISHED already enforces zero motor output.  Enter IDLE only as the
+     * internal handoff required by start_ball_mission(); no user command or
+     * motor-active intermediate state is introduced. */
+    controller->mode = APP_MODE_IDLE;
+    publish_event(controller, DIAGNOSTIC_EVENT_INFO,
+                  controller->config->post_autonomy_ball_delay_ms, 0,
+                  "autonomy_to_ball_mission", now_us);
+    start_ball_mission(controller, now_us);
 }
 
 static void start_self_test(app_controller_t *controller, char command,
@@ -378,7 +438,7 @@ static void apply_intents(app_controller_t *controller,
     if (intents.help) {
         publish_event(controller, DIAGNOSTIC_EVENT_INFO, 0,
                       controller->speed,
-                      "b ball approach; u/z preview; p view; x stop",
+                      "f line+avoid+3s+mission; n mission; x stop",
                       now_us);
     }
     if (intents.preview_enable || intents.preview_disable) {
@@ -395,7 +455,8 @@ static void apply_intents(app_controller_t *controller,
     if (intents.camera_view) {
         const bool safe_to_dump = controller->mode == APP_MODE_IDLE &&
             !intents.force_auto && !intents.boot && !intents.motion &&
-            !intents.self_test && !intents.ball_approach;
+            !intents.self_test && !intents.ball_approach &&
+            !intents.ball_mission;
         const bool accepted = safe_to_dump &&
             camera_line_sensor_request_ascii_view(&controller->camera_line);
         publish_event(controller, DIAGNOSTIC_EVENT_INFO,
@@ -413,6 +474,7 @@ static void apply_intents(app_controller_t *controller,
         controller->manual_command = motor_command_zero();
         controller->self_test = (self_test_t) {0};
         ball_approach_reset(&controller->ball_approach);
+        ball_mission_reset(&controller->ball_mission);
         publish_event(controller, DIAGNOSTIC_EVENT_STOP, 0, 0,
                       "stop", now_us);
         return;
@@ -423,14 +485,18 @@ static void apply_intents(app_controller_t *controller,
         start_autonomy(controller, now_us, false);
     } else if (intents.ball_approach && controller->fault_bitmap == 0) {
         start_ball_approach(controller, now_us);
+    } else if (intents.ball_mission && controller->fault_bitmap == 0) {
+        start_ball_mission(controller, now_us);
     } else if (intents.motion && controller->fault_bitmap == 0) {
         controller->mode = APP_MODE_MANUAL;
         controller->self_test = (self_test_t) {0};
         ball_approach_reset(&controller->ball_approach);
+        ball_mission_reset(&controller->ball_mission);
         controller->manual_command = manual_for(intents.motion,
                                                 controller->speed);
     } else if (intents.self_test && controller->fault_bitmap == 0) {
         ball_approach_reset(&controller->ball_approach);
+        ball_mission_reset(&controller->ball_mission);
         start_self_test(controller, intents.self_test, now_us);
     }
 }
@@ -452,6 +518,8 @@ static void publish_snapshot(app_controller_t *controller, int64_t now_us)
         .startup_maneuver_phase = controller->startup_maneuver.phase,
         .ball_approach_state = controller->ball_approach.state,
         .ball_approach_reason = controller->ball_approach.last_reason,
+        .ball_target_color = controller->ball_approach.target_color,
+        .ball_mission_state = controller->ball_mission.state,
         .ball_capture_frames = controller->ball_approach.capture_frames,
         .ball_goal_frames = controller->ball_approach.goal_frames,
         .ball_approach_error =
@@ -492,11 +560,15 @@ static void publish_snapshot(app_controller_t *controller, int64_t now_us)
             .finished = controller->obstacle.state ==
                         OBSTACLE_STATE_FINISHED ||
                         controller->ball_approach.state ==
-                            BALL_APPROACH_STATE_DONE,
+                            BALL_APPROACH_STATE_DONE ||
+                        controller->ball_mission.state ==
+                            BALL_MISSION_STATE_DONE,
             .failsafe = controller->obstacle.state ==
                         OBSTACLE_STATE_FAILSAFE ||
                         controller->ball_approach.state ==
-                            BALL_APPROACH_STATE_FAILSAFE,
+                            BALL_APPROACH_STATE_FAILSAFE ||
+                        controller->ball_mission.state ==
+                            BALL_MISSION_STATE_FAILSAFE,
         };
         status_display_publish(&controller->display, &display_snapshot);
     }
@@ -536,6 +608,8 @@ static void controller_step(app_controller_t *controller, int64_t now_us)
                   FAULT_UNRECOVERABLE_THIS_BOOT);
     }
 
+    start_chained_ball_mission_if_ready(controller, now_us);
+
     motor_command_t final_command = motor_command_zero();
     if (controller->mode == APP_MODE_MANUAL) {
         final_command = controller->manual_command;
@@ -550,6 +624,25 @@ static void controller_step(app_controller_t *controller, int64_t now_us)
             publish_event(controller, DIAGNOSTIC_EVENT_BALL_APPROACH,
                           ball_decision.state, ball_decision.reason,
                           ball_approach_state_name(ball_decision.state),
+                          now_us);
+        }
+    } else if (controller->mode == APP_MODE_BALL_MISSION) {
+        const ball_mission_decision_t mission_decision =
+            ball_mission_step(&controller->ball_mission,
+                              &controller->ball_approach,
+                              &controller->latest_camera, now_us);
+        final_command = mission_decision.command;
+        if (mission_decision.approach.transitioned) {
+            publish_event(controller, DIAGNOSTIC_EVENT_BALL_APPROACH,
+                          mission_decision.approach.state,
+                          mission_decision.approach.reason,
+                          ball_approach_state_name(
+                              mission_decision.approach.state), now_us);
+        }
+        if (mission_decision.mission_transitioned) {
+            publish_event(controller, DIAGNOSTIC_EVENT_BALL_MISSION,
+                          mission_decision.state, 0,
+                          ball_mission_state_name(mission_decision.state),
                           now_us);
         }
     } else if (controller->mode == APP_MODE_AUTONOMOUS) {
@@ -744,6 +837,8 @@ bool app_controller_init(app_controller_t *controller,
     ball_approach_init(&controller->ball_approach,
                        &config->ball_approach,
                        &config->kinematics);
+    ball_mission_init(&controller->ball_mission,
+                      &config->ball_mission);
     controller->latest_camera = camera_line_sensor_snapshot(
         &controller->camera_line, esp_timer_get_time());
     controller->latest_line = controller->latest_camera.virtual_sensors;

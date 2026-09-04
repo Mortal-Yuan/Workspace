@@ -259,7 +259,9 @@ bool camera_preview_build_rgb332(
     if (ball != NULL && ball->candidate) {
         /* The ball detector operates on the full frame.  Its orange/magenta
          * box is therefore deliberately not clipped to the yellow line ROI. */
-        const uint8_t color = ball->detected ? 0xe3 : 0xf0;
+        const uint8_t color = ball->color == BALL_COLOR_GREEN ?
+            (ball->detected ? 0xff : 0xb6) :
+            (ball->detected ? 0xe3 : 0xf0);
         draw_box(packet,
                  permille_to_pixel(ball->box_left_permille, packet->width),
                  permille_to_pixel(ball->box_top_permille, packet->height),

@@ -13,6 +13,7 @@ typedef enum {
     DIAGNOSTIC_EVENT_STOP,
     DIAGNOSTIC_EVENT_SELF_TEST,
     DIAGNOSTIC_EVENT_BALL_APPROACH,
+    DIAGNOSTIC_EVENT_BALL_MISSION,
     DIAGNOSTIC_EVENT_INFO,
 } diagnostic_event_kind_t;
 
@@ -32,6 +33,8 @@ typedef struct {
     uint8_t startup_maneuver_phase;
     uint8_t ball_approach_state;
     uint8_t ball_approach_reason;
+    uint8_t ball_target_color;
+    uint8_t ball_mission_state;
     uint8_t ball_capture_frames;
     uint8_t ball_goal_frames;
     int16_t ball_approach_error;
