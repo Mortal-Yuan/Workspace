@@ -180,17 +180,24 @@ typedef struct {
     int capture_box_bottom_permille;
     int capture_confirm_frames;
     int capture_verify_max_frames;
-    /* Once the ball is in the clip, steer on the blue goal while pushing. */
+    /* Once the ball is in the clip, align it with the blue goal before the
+     * fixed straight push. */
     int push_speed;
     int push_boost_speed;
     int push_boost_ms;
     int push_steering_gain_permille;
     int push_maximum_correction;
+    /* Relative ball/goal errors at or above this value receive the full
+     * post-capture lateral pulse; smaller errors receive a shorter pulse. */
     int push_realign_threshold_permille;
     /* Final blue-goal alignment has a wider, faster confirmation than the
      * earlier ball-centering phase so visual jitter cannot postpone a kick. */
     int push_align_deadband_permille;
     int push_align_confirm_frames;
+    /* Post-capture three-point alignment uses a stronger lateral pulse than
+     * the distant pre-capture route adjustment. */
+    int push_align_lateral_speed;
+    int push_align_pulse_ms;
     /* The passive front guide does not retain a ball.  After confirmed
      * contact, accept a ball rolling away only after sufficient forward image
      * displacement and several stopped frames without a confirmed ball. */
@@ -238,8 +245,6 @@ typedef struct {
     int lateral_start_speed;
     int motion_boost_ms;
     int left_strafe_ms;
-    int left_heading_trim_speed;
-    int left_heading_trim_ms;
     int forward_speed;
     int forward_start_speed;
     int forward_drive_ms;

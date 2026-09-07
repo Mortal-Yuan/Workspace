@@ -620,9 +620,11 @@ static void test_ball_approach(void)
     assert(config->align_settle_ms == 200);
     assert(config->push_speed == 500);
     assert(config->push_boost_speed == 500);
-    assert(config->push_boost_ms == 500);
+    assert(config->push_boost_ms == 600);
     assert(config->push_align_deadband_permille == 100);
     assert(config->push_align_confirm_frames == 2);
+    assert(config->push_align_lateral_speed == 380);
+    assert(config->push_align_pulse_ms == 120);
     assert(config->goal_overlap_margin_permille == 0);
     assert(config->goal_overlap_confirm_frames == 3);
     assert(config->recovery_wait_ms == 2000);
@@ -886,8 +888,9 @@ static void test_ball_approach(void)
     assert(!decision.done && !decision.failsafe);
     assert(!motor_command_is_zero(decision.command));
 
-    /* With the ball captured, a right-side goal is aligned through repeated
-     * small rightward translations, not an in-place yaw. */
+    /* With the ball captured, the controller first uses the ball-to-goal
+     * relative error.  Two consistent stopped frames are required before a
+     * right-side goal starts the empirically corrected positive-left shift. */
     ball_approach_start(&controller, now_us += 100000);
     controller.state = BALL_APPROACH_STATE_PUSH_ALIGN;
     controller.state_started_us = now_us;
@@ -896,12 +899,22 @@ static void test_ball_approach(void)
     set_blue_goal(&camera, true, true, 400, 600,
                   590, 500, 710, 700);
     decision = ball_approach_step(&controller, &camera, now_us += 70000);
+    assert(decision.state == BALL_APPROACH_STATE_PUSH_ALIGN);
+    assert(motor_command_is_zero(decision.command));
+    camera.decoded_frames = 36;
+    decision = ball_approach_step(&controller, &camera, now_us += 70000);
     assert(decision.state == BALL_APPROACH_STATE_PUSH_ALIGN_PULSE);
-    assert(decision.command.a == 300 && decision.command.b == 460 &&
-           decision.command.c == -300);
+    assert(decision.command.a == -300 && decision.command.b == -418 &&
+           decision.command.c == 300);
+    assert(controller.push_align_motion_ms == 120);
     decision = ball_approach_step(
         &controller, &camera,
-        now_us += config->route_pulse_ms * 1000LL);
+        now_us += controller.push_align_motion_ms * 1000LL - 1000);
+    assert(decision.state == BALL_APPROACH_STATE_PUSH_ALIGN_PULSE);
+    assert(decision.command.a == -300 && decision.command.b == -418 &&
+           decision.command.c == 300);
+    decision = ball_approach_step(
+        &controller, &camera, now_us += 1000);
     assert(decision.state == BALL_APPROACH_STATE_PUSH_ALIGN_SETTLE);
     assert(motor_command_is_zero(decision.command));
     decision = ball_approach_step(
@@ -912,7 +925,7 @@ static void test_ball_approach(void)
 
     /* The fallback post-contact gate remains tight: two 90-permille samples
      * are accepted, unlike the rejected 375-permille sample above. */
-    for (uint32_t sequence = 36; sequence <= 37; ++sequence) {
+    for (uint32_t sequence = 37; sequence <= 38; ++sequence) {
         camera = ball_control_frame(
             sequence, true, true, 25, 820, 190, 20, 915);
         set_blue_goal(&camera, true, true, 115, 600,
@@ -921,6 +934,50 @@ static void test_ball_approach(void)
             &controller, &camera, now_us += 70000);
     }
     assert(decision.state == BALL_APPROACH_STATE_PUSH);
+
+    /* Near the alignment gate, keep the 380 command but shorten its duration.
+     * A 120-permille ray error maps to 90 ms between the 80 and 120 ms limits. */
+    ball_approach_start(&controller, now_us += 100000);
+    controller.state = BALL_APPROACH_STATE_PUSH_ALIGN;
+    controller.state_started_us = now_us;
+    controller.push_started_us = now_us;
+    camera = ball_control_frame(40, true, true, 25, 820, 190, 20, 915);
+    set_blue_goal(&camera, true, true, 145, 600,
+                  420, 500, 600, 700);
+    decision = ball_approach_step(&controller, &camera, now_us += 70000);
+    assert(decision.state == BALL_APPROACH_STATE_PUSH_ALIGN);
+    assert(motor_command_is_zero(decision.command));
+    camera.decoded_frames = 41;
+    decision = ball_approach_step(&controller, &camera, now_us += 70000);
+    assert(decision.state == BALL_APPROACH_STATE_PUSH_ALIGN_PULSE);
+    assert(controller.push_align_motion_ms == 90);
+    assert(decision.command.a == -300 && decision.command.b == -418 &&
+           decision.command.c == 300);
+    decision = ball_approach_step(
+        &controller, &camera, now_us += 89000);
+    assert(decision.state == BALL_APPROACH_STATE_PUSH_ALIGN_PULSE);
+    decision = ball_approach_step(&controller, &camera, now_us += 1000);
+    assert(decision.state == BALL_APPROACH_STATE_PUSH_ALIGN_SETTLE);
+    assert(motor_command_is_zero(decision.command));
+
+    /* After ball and goal share one ray, an off-axis pair uses the existing
+     * 300-command/80 ms yaw pulse to put that ray on the clip axis. */
+    ball_approach_start(&controller, now_us += 100000);
+    controller.state = BALL_APPROACH_STATE_PUSH_ALIGN;
+    controller.state_started_us = now_us;
+    controller.push_started_us = now_us;
+    camera = ball_control_frame(42, true, true, 175, 820, 190, 20, 915);
+    set_blue_goal(&camera, true, true, 225, 600,
+                  420, 500, 600, 700);
+    decision = ball_approach_step(&controller, &camera, now_us += 70000);
+    assert(decision.state == BALL_APPROACH_STATE_PUSH_ALIGN);
+    camera.decoded_frames = 43;
+    decision = ball_approach_step(&controller, &camera, now_us += 70000);
+    assert(decision.state == BALL_APPROACH_STATE_PUSH_ALIGN_PULSE);
+    assert(controller.push_align_turning);
+    assert(controller.push_align_motion_ms == config->align_pulse_ms);
+    assert(decision.command.a == 300 && decision.command.b == 0 &&
+           decision.command.c == -300);
 
     /* One noisy non-contact sample inside the five-frame stationary window
      * does not immediately latch failsafe; a later matching sample completes
@@ -991,16 +1048,23 @@ static void test_ball_approach(void)
     set_blue_goal(&camera, false, false, 0, 0, 0, 0, 0, 0);
     decision = ball_approach_step(&controller, &camera, now_us += 70000);
     assert(decision.state == BALL_APPROACH_STATE_ALIGN);
-    assert(!controller.route_completed);
+    assert(controller.route_completed);
     assert(motor_command_is_zero(decision.command));
 
-    /* A route that cannot converge within its bounded interval restores the
-     * original best-effort ball-centering continuation. */
+    /* Once a previously visible blue goal flickers out, a reappearance does
+     * not interrupt ball-first centering again. */
     camera = ball_control_frame(56, true, true, 300, 450, 100, 6, 508);
     set_blue_goal(&camera, true, true, -100, 350,
                   390, 280, 510, 420);
     decision = ball_approach_step(&controller, &camera, now_us += 70000);
-    assert(decision.state == BALL_APPROACH_STATE_ROUTE_ALIGN);
+    assert(decision.state == BALL_APPROACH_STATE_ALIGN_PULSE);
+    assert(controller.route_completed);
+
+    /* A continuously visible route that cannot converge within its bounded
+     * interval also restores best-effort ball centering. */
+    ball_approach_start(&controller, now_us += 100000);
+    controller.state = BALL_APPROACH_STATE_ROUTE_ALIGN;
+    controller.state_started_us = now_us;
     controller.route_started_us = now_us -
         config->route_align_timeout_ms * 1000LL;
     camera.decoded_frames = 57;
@@ -1255,12 +1319,12 @@ static void test_camera_line_vision(void)
     assert(APP_CONFIG.camera_line.center_offset_permille == -165);
     assert(APP_CONFIG.camera_line.roi_left_permille == 250);
     assert(APP_CONFIG.camera_line.roi_right_permille == 750);
-    assert(APP_CONFIG.camera_line.roi_top_permille == 467);
-    assert(APP_CONFIG.camera_line.roi_bottom_permille == 797);
+    assert(APP_CONFIG.camera_line.roi_top_permille == 517);
+    assert(APP_CONFIG.camera_line.roi_bottom_permille == 847);
     assert(CAMERA_BALL_VISION_MAX_HEIGHT *
-               APP_CONFIG.camera_line.roi_top_permille / 1000 == 28);
+               APP_CONFIG.camera_line.roi_top_permille / 1000 == 31);
     assert(CAMERA_BALL_VISION_MAX_HEIGHT *
-               APP_CONFIG.camera_line.roi_bottom_permille / 1000 == 47);
+               APP_CONFIG.camera_line.roi_bottom_permille / 1000 == 50);
     assert(APP_CONFIG.camera_line.horizontal_scale_permille == 1000);
     assert(APP_CONFIG.camera_line.maximum_black_gray == 120);
     assert(APP_CONFIG.camera_line.hairpin_near_threshold_permille == 160);
@@ -1582,11 +1646,11 @@ static void test_kiwi_kinematics(void)
 
     command = kiwi_inverse_kinematics(
         (body_motion_command_t) {.left = 380}, &APP_CONFIG.kinematics);
-    assert(APP_CONFIG.kinematics.lateral_yaw_compensation_permille == 200);
-    assert(command.a == -300 && command.b == -456 && command.c == 300);
+    assert(APP_CONFIG.kinematics.lateral_yaw_compensation_permille == 100);
+    assert(command.a == -300 && command.b == -418 && command.c == 300);
     command = kiwi_inverse_kinematics(
         (body_motion_command_t) {.left = 500}, &APP_CONFIG.kinematics);
-    assert(command.a == -333 && command.b == -600 && command.c == 333);
+    assert(command.a == -383 && command.b == -550 && command.c == 383);
     command = kiwi_inverse_kinematics(
         (body_motion_command_t) {.left = -380}, &APP_CONFIG.kinematics);
     assert(APP_CONFIG.kinematics.right_lateral_yaw_compensation_permille ==
@@ -1975,20 +2039,18 @@ static void test_line_follow_behavior(void)
 static void test_obstacle_supervisor(void)
 {
     obstacle_config_t config = APP_CONFIG.obstacle;
-    assert(config.stop_mm == 110);
+    assert(config.stop_mm == 75);
     assert(config.no_echo_limit == 3);
     assert(APP_CONFIG.ultrasonic.timeout_us == 45000);
     assert(APP_CONFIG.ultrasonic.period_ms == 70);
     assert(config.lateral_speed == 380);
     assert(config.lateral_start_speed == 500);
     assert(config.left_strafe_ms == 1468);
-    assert(config.left_heading_trim_speed == 460);
-    assert(config.left_heading_trim_ms == 60);
-    assert(config.forward_drive_ms == 1243);
+    assert(config.forward_drive_ms == 1651);
     assert(config.right_lateral_start_speed == 300);
     assert(config.right_lateral_start_clockwise == -60);
     assert(config.right_lateral_ramp_ms == 400);
-    assert(config.right_strafe_ms == 625);
+    assert(config.right_strafe_ms == 688);
     assert(config.post_bypass_forward_ms == 525);
     config.bypass_enabled = false;
     obstacle_supervisor_t supervisor;
@@ -2054,7 +2116,8 @@ static void test_obstacle_supervisor(void)
     assert(supervisor.state == OBSTACLE_STATE_CLEAR);
 
     /* A near raw Echo still stops immediately, even if it is an outlier. */
-    event = ultrasonic(12, true, 80, 300, ULTRASONIC_QUALITY_OUTLIER,
+    event = ultrasonic(12, true, config.stop_mm, 300,
+                       ULTRASONIC_QUALITY_OUTLIER,
                        false, false);
     decision = obstacle_step(&supervisor, &event);
     assert(decision.policy == MOTION_POLICY_BLOCK);
@@ -2112,7 +2175,7 @@ static void test_automatic_bypass_sequence(void)
     assert(supervisor.state == OBSTACLE_STATE_CLEAR);
     assert(decision.policy == MOTION_POLICY_LINE_FOLLOW);
 
-    event = ultrasonic(4, true, 80, 300,
+    event = ultrasonic(4, true, config.stop_mm, 300,
                        ULTRASONIC_QUALITY_OUTLIER, false, false);
     decision = obstacle_step_at(&supervisor, &event, white, 200000);
     assert(supervisor.state == OBSTACLE_STATE_BRAKE);
@@ -2132,33 +2195,6 @@ static void test_automatic_bypass_sequence(void)
     decision = obstacle_step_at(&supervisor, NULL, black, now_us);
     assert(supervisor.state == OBSTACLE_STATE_STRAFE_LEFT_DISTANCE);
     assert(decision.override_motion.left == config.lateral_speed);
-
-    now_us++;
-    decision = obstacle_step_at(&supervisor, NULL, white, now_us);
-    assert(supervisor.state == OBSTACLE_STATE_SETTLE_LEFT_TRIM);
-    assert(decision.policy == MOTION_POLICY_BLOCK);
-
-    now_us += config.brake_ms * 1000LL;
-    decision = obstacle_step_at(&supervisor, NULL, white, now_us);
-    assert(supervisor.state == OBSTACLE_STATE_LEFT_HEADING_TRIM);
-    assert(decision.transition ==
-           OBSTACLE_TRANSITION_TO_LEFT_HEADING_TRIM);
-    assert(decision.policy == MOTION_POLICY_OVERRIDE);
-    assert(decision.override_motion.clockwise ==
-           -config.left_heading_trim_speed);
-    body_motion_command_t trim_motion = decision.override_motion;
-    motor_command_t trim_wheels = kiwi_inverse_kinematics(
-        trim_motion, &APP_CONFIG.kinematics);
-    assert(trim_wheels.a == -460 && trim_wheels.b == 460 &&
-           trim_wheels.c == 460);
-
-    const int64_t trim_started_us = supervisor.phase_started_us;
-    now_us = trim_started_us + config.left_heading_trim_ms * 1000LL - 1;
-    decision = obstacle_step_at(&supervisor, NULL, black, now_us);
-    assert(supervisor.state == OBSTACLE_STATE_LEFT_HEADING_TRIM);
-    assert(decision.policy == MOTION_POLICY_OVERRIDE);
-    assert(decision.override_motion.clockwise ==
-           -config.left_heading_trim_speed);
 
     now_us++;
     decision = obstacle_step_at(&supervisor, NULL, white, now_us);
@@ -2491,10 +2527,11 @@ static void test_camera_preview_packet(void)
     assert((packet.flags & CAMERA_PREVIEW_FLAG_BALL_DETECTED) != 0);
     assert(packet.pixels[0] == 0xff); /* white RGB332 outside ROI */
     assert(packet.pixels[black_index] == 0xe0); /* marked black pixel */
-    assert(packet.pixels[28U * CAMERA_PREVIEW_WIDTH + 30U] == 0xfc);
-    assert(packet.pixels[46U * CAMERA_PREVIEW_WIDTH + 30U] == 0xfc);
-    assert(packet.pixels[42U * CAMERA_PREVIEW_WIDTH + 42U] == 0x1c);
-    assert(packet.pixels[31U * CAMERA_PREVIEW_WIDTH + 46U] == 0x03);
+    assert(packet.pixels[28U * CAMERA_PREVIEW_WIDTH + 30U] == 0xff);
+    assert(packet.pixels[31U * CAMERA_PREVIEW_WIDTH + 30U] == 0xfc);
+    assert(packet.pixels[49U * CAMERA_PREVIEW_WIDTH + 30U] == 0xfc);
+    assert(packet.pixels[45U * CAMERA_PREVIEW_WIDTH + 42U] == 0x1c);
+    assert(packet.pixels[34U * CAMERA_PREVIEW_WIDTH + 46U] == 0x03);
     /* Confirmed-ball magenta box is drawn above/outside the line ROI. */
     assert(packet.pixels[10U * CAMERA_PREVIEW_WIDTH + 30U] == 0xe3);
     assert(packet.pixels[20U * CAMERA_PREVIEW_WIDTH + 40U] == 0xe3);
@@ -2532,9 +2569,6 @@ int main(void)
     assert(!app_config_validate(&invalid));
     invalid = APP_CONFIG;
     invalid.startup_maneuver.right_turn_ms = 0;
-    assert(!app_config_validate(&invalid));
-    invalid = APP_CONFIG;
-    invalid.obstacle.left_heading_trim_ms = 0;
     assert(!app_config_validate(&invalid));
     invalid = APP_CONFIG;
     invalid.ball_approach.capture_box_bottom_permille = 1001;

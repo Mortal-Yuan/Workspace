@@ -12,10 +12,9 @@ static bool valid_command(int value)
 const app_config_t APP_CONFIG = {
     .kinematics = {
         .lateral_side_permille = 866,
-        /* A -20% trial caused a strong counter-clockwise circle and reduced
-         * motor B to a stall-prone -304.  Use +20% so B reaches -456 while
-         * adding only a moderate clockwise correction. */
-        .lateral_yaw_compensation_permille = 200,
+        /* +20% visibly rotated clockwise while 0% over-rotated counter-
+         * clockwise.  Split the observed bracket at +10%. */
+        .lateral_yaw_compensation_permille = 100,
         /* Right strafe still rotated clockwise severely at 30%. */
         .right_lateral_yaw_compensation_permille = 500,
         /* A/C stalled at 226 during the 20% compensation trial. */
@@ -75,12 +74,12 @@ const app_config_t APP_CONFIG = {
         .search_reacquire_frames = 3,
     },
     .camera_line = {
-        /* The 80x60 line ROI was moved upward by exactly eight decoded rows:
-         * y=36..54 became y=28..46, preserving its 19-row height. */
+        /* Shift the 80x60 line ROI down by three decoded rows while preserving
+         * its 19-row height: y=28..46 becomes y=31..49. */
         .roi_left_permille = 250,
         .roi_right_permille = 750,
-        .roi_top_permille = 467,
-        .roi_bottom_permille = 797,
+        .roi_top_permille = 517,
+        .roi_bottom_permille = 847,
         .horizontal_scale_permille = 1000,
         /* 2026-08-31 geometric-center recalibration: +202 -> 0. */
         .center_offset_permille = -165,
@@ -235,18 +234,24 @@ const app_config_t APP_CONFIG = {
         .capture_box_bottom_permille = 680,
         .capture_confirm_frames = 2,
         .capture_verify_max_frames = 5,
-        /* After three aligned blue-goal frames, kick straight once at high
-         * power for a fixed interval, then declare this color complete. */
+        /* After two frames with both the ball-goal ray and clip axis aligned,
+         * kick straight once for the fixed interval, then declare completion. */
         .push_speed = 500,
         .push_boost_speed = 500,
-        .push_boost_ms = 500,
+        .push_boost_ms = 600,
         .push_steering_gain_permille = 500,
         .push_maximum_correction = 80,
+        /* Use the full 120 ms lateral pulse from 180 permille error upward;
+         * near the 100-permille gate, taper toward the existing 80 ms pulse. */
         .push_realign_threshold_permille = 180,
         /* After contact, reacquire the destination if necessary and require
-         * two aligned observations before committing to the fixed kick. */
+         * two fully aligned observations before committing to the fixed kick. */
         .push_align_deadband_permille = 100,
         .push_align_confirm_frames = 2,
+        /* The former 300/80 ms post-capture translation was sometimes too
+         * small to correct the ball-car-goal line. */
+        .push_align_lateral_speed = 380,
+        .push_align_pulse_ms = 120,
         /* The passive guide touches rather than clamps the ball.  Live
          * delivery moved red from y=776 to y=355 before it rolled out of
          * recognition, so require a conservative 200-permille forward change. */
@@ -292,8 +297,8 @@ const app_config_t APP_CONFIG = {
     .obstacle = {
         /* Enabled for the first ground-level distance calibration. */
         .bypass_enabled = true,
-        /* Field retune: start the bypass 3 cm earlier (8 cm -> 11 cm). */
-        .stop_mm = 110,
+        /* Trigger the fixed bypass when the first raw Echo reaches 75 mm. */
+        .stop_mm = 75,
         .clear_confirm_count = 3,
         /* Retained for diagnostics; open-space no-Echo does not stop CLEAR. */
         .no_echo_limit = 3,
@@ -306,15 +311,11 @@ const app_config_t APP_CONFIG = {
         /* Field retune: shorten the proven 1545 ms left segment by 5%;
          * 1545 * 0.95 = 1467.75 ms, rounded to 1468 ms. */
         .left_strafe_ms = 1468,
-        /* After the lateral stop, visibly counter the observed final
-         * clockwise slip with three 20 ms periods at the stronger yaw level. */
-        .left_heading_trim_speed = 460,
-        .left_heading_trim_ms = 60,
         .forward_speed = 400,
         .forward_start_speed = 500,
-        /* Extend the preceding 1184 ms middle-forward segment by 5%:
-         * 1184 * 1.05 = 1243.2 ms, rounded to 1243 ms. */
-        .forward_drive_ms = 1243,
+        /* Increase the preceding 1436 ms middle-forward segment by 15%:
+         * 1436 * 1.15 = 1651.4 ms, rounded to 1651 ms. */
+        .forward_drive_ms = 1651,
         /* Right strafe no longer uses the 500-command launch boost.  Ramp
          * from the lowest effective lateral command to 380 over 400 ms to
          * reduce the tyre torque step that caused slipping. */
@@ -325,10 +326,9 @@ const app_config_t APP_CONFIG = {
          * 510 and still finishes at the proven 570 steady command. */
         .right_lateral_start_clockwise = -60,
         .right_lateral_ramp_ms = 400,
-        /* Reduce the preceding 1042 ms return strafe by 40%:
-         * 1042 * 0.60 = 625.2 ms -> 625 ms. Keep the existing 400 ms ramp
-         * and yaw compensation. */
-        .right_strafe_ms = 625,
+        /* Increase the preceding 625 ms return strafe by 10%:
+         * 625 * 1.10 = 687.5 ms, rounded to 688 ms. */
+        .right_strafe_ms = 688,
         /* After the full right strafe, ignore line input and drive straight
          * for 5% longer than the preceding 500 ms. */
         .post_bypass_forward_ms = 525,
@@ -401,10 +401,6 @@ bool app_config_validate(const app_config_t *config)
             config->obstacle.lateral_speed &&
         config->obstacle.motion_boost_ms >= 0 &&
         config->obstacle.left_strafe_ms > 0 &&
-        valid_command(config->obstacle.left_heading_trim_speed) &&
-        config->obstacle.left_heading_trim_speed > 0 &&
-        config->obstacle.left_heading_trim_ms > 0 &&
-        config->obstacle.left_heading_trim_ms <= 200 &&
         valid_command(config->obstacle.forward_speed) &&
         config->obstacle.forward_speed > 0 &&
         valid_command(config->obstacle.forward_start_speed) &&
@@ -694,6 +690,13 @@ bool app_config_validate(const app_config_t *config)
             config->ball_approach.push_realign_threshold_permille &&
         config->ball_approach.push_align_confirm_frames > 0 &&
         config->ball_approach.push_align_confirm_frames <= 20 &&
+        valid_command(config->ball_approach.push_align_lateral_speed) &&
+        config->ball_approach.push_align_lateral_speed >=
+            config->ball_approach.route_lateral_speed &&
+        config->ball_approach.push_align_pulse_ms > 0 &&
+        config->ball_approach.push_align_pulse_ms >=
+            config->ball_approach.align_pulse_ms &&
+        config->ball_approach.push_align_pulse_ms <= 500 &&
         config->ball_approach.delivery_rollaway_minimum_permille > 0 &&
         config->ball_approach.delivery_rollaway_minimum_permille <= 1000 &&
         config->ball_approach.delivery_occlusion_confirm_frames > 1 &&

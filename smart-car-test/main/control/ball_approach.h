@@ -89,10 +89,12 @@ typedef struct {
     uint8_t capture_frames;
     uint8_t capture_samples;
     uint8_t goal_frames;
+    uint16_t push_align_motion_ms;
     uint16_t capture_reference_y_permille;
     uint16_t post_capture_min_y_permille;
     uint16_t search_motion_ms;
     int8_t turn_direction;
+    bool push_align_turning;
     int64_t run_started_us;
     int64_t state_started_us;
     int64_t approach_started_us;

@@ -14,7 +14,7 @@ enum {
     DEGRADED_ENCODER = 1U << 0,
     DEGRADED_DIAGNOSTICS = 1U << 1,
     DEGRADED_DISPLAY = 1U << 2,
-    STRAFE_CALIBRATION_DURATION_US = 1000000,
+    RIGHT_STRAFE_CALIBRATION_DURATION_US = 1000000,
 };
 
 typedef struct {
@@ -334,8 +334,9 @@ static void start_self_test(app_controller_t *controller, char command,
     } else if (command == 'q' || command == 'e') {
         controller->self_test.kind = command == 'q' ?
             SELF_TEST_STRAFE_LEFT : SELF_TEST_STRAFE_RIGHT;
-        controller->self_test.deadline_us = now_us +
-            STRAFE_CALIBRATION_DURATION_US;
+        controller->self_test.deadline_us = now_us + (command == 'q' ?
+            controller->config->obstacle.left_strafe_ms * 1000LL :
+            RIGHT_STRAFE_CALIBRATION_DURATION_US);
     } else if (command == 'g') {
         controller->self_test.kind = SELF_TEST_FORWARD_CALIBRATION;
         controller->self_test.deadline_us = now_us + 1000000;
@@ -385,8 +386,17 @@ static motor_command_t self_test_step(app_controller_t *controller,
         } else {
             const int direction = controller->self_test.kind ==
                                   SELF_TEST_STRAFE_LEFT ? 1 : -1;
-            motion.left = (int16_t)(direction *
-                controller->config->obstacle.lateral_speed);
+            int lateral_speed = controller->config->obstacle.lateral_speed;
+            if (controller->self_test.kind == SELF_TEST_STRAFE_LEFT) {
+                const int64_t started_us = controller->self_test.deadline_us -
+                    controller->config->obstacle.left_strafe_ms * 1000LL;
+                if (now_us - started_us <
+                    controller->config->obstacle.motion_boost_ms * 1000LL) {
+                    lateral_speed =
+                        controller->config->obstacle.lateral_start_speed;
+                }
+            }
+            motion.left = (int16_t)(direction * lateral_speed);
         }
         return kiwi_inverse_kinematics(
             motion, &controller->config->kinematics);

@@ -103,17 +103,52 @@ static motor_command_t route_shift_command(
         &controller->kinematics_config);
 }
 
+static motor_command_t push_align_shift_command(
+    const ball_approach_t *controller, int direction)
+{
+    return kiwi_inverse_kinematics(
+        (body_motion_command_t) {
+            .left = (int16_t)(direction *
+                controller->config.push_align_lateral_speed),
+        },
+        &controller->kinematics_config);
+}
+
+static motor_command_t push_align_command(
+    const ball_approach_t *controller)
+{
+    if (controller->push_align_turning) {
+        return turn_command(controller->turn_direction,
+                            controller->config.align_speed);
+    }
+    return push_align_shift_command(controller,
+                                    controller->turn_direction);
+}
+
+static int push_align_lateral_pulse_ms(
+    const ball_approach_t *controller, int error)
+{
+    const int minimum_ms = controller->config.align_pulse_ms;
+    const int maximum_ms = controller->config.push_align_pulse_ms;
+    const int deadband = controller->config.push_align_deadband_permille;
+    const int full_pulse_error =
+        controller->config.push_realign_threshold_permille;
+    const int magnitude = abs(error);
+
+    if (maximum_ms <= minimum_ms || full_pulse_error <= deadband) {
+        return maximum_ms;
+    }
+    if (magnitude >= full_pulse_error) return maximum_ms;
+    if (magnitude <= deadband) return minimum_ms;
+    return minimum_ms +
+        (maximum_ms - minimum_ms) * (magnitude - deadband) /
+            (full_pulse_error - deadband);
+}
+
 static int ball_center_error(const ball_approach_t *controller,
                              const camera_ball_observation_t *ball)
 {
     return ball->center_x_permille -
-        controller->config.target_center_x_permille;
-}
-
-static int goal_center_error(const ball_approach_t *controller,
-                             const camera_ball_observation_t *goal)
-{
-    return goal->center_x_permille -
         controller->config.target_center_x_permille;
 }
 
@@ -418,14 +453,19 @@ ball_approach_decision_t ball_approach_step(
     }
     const camera_ball_observation_t *goal = &controller->selected_goal;
     const int red_error = ball_center_error(controller, ball);
-    const int blue_error = goal_center_error(controller, goal);
     const int red_blue_error = route_error(ball, goal);
+    /* Positive means that the blue goal is right of the captured ball. */
+    const int push_ray_error = -red_blue_error;
+    const int push_control_error =
+        abs(push_ray_error) >
+            controller->config.push_align_deadband_permille ?
+            push_ray_error : red_error;
 
     int reported_error = red_error;
     if (is_route_state(controller->state)) {
         reported_error = red_blue_error;
     } else if (is_push_state(controller->state)) {
-        reported_error = blue_error;
+        reported_error = push_control_error;
     }
     decision.center_error_permille = (int16_t)clamp_int(
         reported_error, -2000, 2000);
@@ -615,7 +655,10 @@ ball_approach_decision_t ball_approach_step(
         }
         if (!is_blue_goal(goal)) {
             controller->align_frames = 0;
-            controller->route_completed = false;
+            /* Do not let a flickering distant goal repeatedly interrupt ball
+             * approach. Continue ball-first and align to the goal after
+             * capture, when both targets occupy more useful image area. */
+            controller->route_completed = true;
             enter_state(controller, &decision, BALL_APPROACH_STATE_ALIGN,
                         BALL_APPROACH_REASON_GOAL_MISSING, now_us);
             break;
@@ -663,7 +706,7 @@ ball_approach_decision_t ball_approach_step(
             }
             if (!is_blue_goal(goal)) {
                 controller->align_frames = 0;
-                controller->route_completed = false;
+                controller->route_completed = true;
                 controller->settle_next_state = BALL_APPROACH_STATE_ALIGN;
                 enter_state(controller, &decision,
                             BALL_APPROACH_STATE_ALIGN_SETTLE,
@@ -696,7 +739,7 @@ ball_approach_decision_t ball_approach_step(
             stop_for_unconfirmed_ball(controller, &decision, ball, now_us);
         } else if (new_frame && !is_blue_goal(goal)) {
             controller->align_frames = 0;
-            controller->route_completed = false;
+            controller->route_completed = true;
             enter_state(controller, &decision, BALL_APPROACH_STATE_ALIGN,
                         BALL_APPROACH_REASON_GOAL_MISSING, now_us);
         } else if (elapsed_us >=
@@ -881,9 +924,26 @@ ball_approach_decision_t ball_approach_step(
             begin_goal_search(controller, &decision, false, now_us);
             break;
         }
-        if (abs(blue_error) <=
+        int correction_direction = 0;
+        bool correction_turning = false;
+        if (abs(push_ray_error) >
             controller->config.push_align_deadband_permille) {
-            if (controller->align_frames < UINT8_MAX) {
+            /* Translate until the captured ball and blue destination share
+             * one viewing ray.  The sign is the floor-tested lateral sign. */
+            correction_direction = push_ray_error > 0 ? 1 : -1;
+        } else if (abs(red_error) >
+                   controller->config.align_deadband_permille) {
+            /* Once their relative error is small, pivot their common ray onto
+             * the calibrated clip axis before the straight kick. */
+            correction_direction = red_error > 0 ? 1 : -1;
+            correction_turning = true;
+        }
+
+        if (correction_direction == 0) {
+            if (controller->turn_direction != 0) {
+                controller->turn_direction = 0;
+                controller->align_frames = 1;
+            } else if (controller->align_frames < UINT8_MAX) {
                 ++controller->align_frames;
             }
             if (controller->align_frames >=
@@ -892,17 +952,35 @@ ball_approach_decision_t ball_approach_step(
                             BALL_APPROACH_STATE_PUSH,
                             BALL_APPROACH_REASON_PUSH_STARTED, now_us);
             }
-        } else {
-            controller->align_frames = 0;
-            /* Translate toward the target instead of pivoting the captured
-             * ball.  Moving right shifts a right-side target left in view. */
-            controller->turn_direction = blue_error > 0 ? -1 : 1;
-            enter_state(controller, &decision,
-                        BALL_APPROACH_STATE_PUSH_ALIGN_PULSE,
-                        BALL_APPROACH_REASON_ALIGNMENT_PULSE, now_us);
-            decision.command = route_shift_command(
-                controller, controller->turn_direction);
+            break;
         }
+
+        /* A single noisy component position cannot start motion. Require the
+         * same correction type and direction on consecutive stopped frames. */
+        if (controller->align_frames == 0 ||
+            controller->turn_direction != correction_direction ||
+            controller->push_align_turning != correction_turning) {
+            controller->turn_direction = (int8_t)correction_direction;
+            controller->push_align_turning = correction_turning;
+            controller->align_frames = 1;
+            break;
+        }
+        if (controller->align_frames < UINT8_MAX) {
+            ++controller->align_frames;
+        }
+        if (controller->align_frames <
+            controller->config.push_align_confirm_frames) {
+            break;
+        }
+
+        controller->align_frames = 0;
+        controller->push_align_motion_ms = (uint16_t)(
+            correction_turning ? controller->config.align_pulse_ms :
+                push_align_lateral_pulse_ms(controller, push_ray_error));
+        enter_state(controller, &decision,
+                    BALL_APPROACH_STATE_PUSH_ALIGN_PULSE,
+                    BALL_APPROACH_REASON_ALIGNMENT_PULSE, now_us);
+        decision.command = push_align_command(controller);
         break;
 
     case BALL_APPROACH_STATE_PUSH_ALIGN_PULSE:
@@ -916,25 +994,33 @@ ball_approach_decision_t ball_approach_step(
                 begin_goal_search(controller, &decision, true, now_us);
                 break;
             }
-            const int sample_direction = blue_error > 0 ? -1 :
-                                         blue_error < 0 ? 1 : 0;
-            if (abs(blue_error) <=
-                    controller->config.push_align_deadband_permille ||
-                sample_direction != controller->turn_direction) {
+            int sample_direction = 0;
+            bool sample_turning = false;
+            if (abs(push_ray_error) >
+                controller->config.push_align_deadband_permille) {
+                sample_direction = push_ray_error > 0 ? 1 : -1;
+            } else if (abs(red_error) >
+                       controller->config.align_deadband_permille) {
+                sample_direction = red_error > 0 ? 1 : -1;
+                sample_turning = true;
+            }
+            if (sample_direction == 0 ||
+                sample_direction != controller->turn_direction ||
+                sample_turning != controller->push_align_turning) {
                 enter_state(controller, &decision,
                             BALL_APPROACH_STATE_PUSH_ALIGN_SETTLE,
                             BALL_APPROACH_REASON_REALIGN, now_us);
                 break;
             }
         }
-        if (elapsed_us >= controller->config.route_pulse_ms * 1000LL) {
+        if (elapsed_us >=
+            controller->push_align_motion_ms * 1000LL) {
             enter_state(controller, &decision,
                         BALL_APPROACH_STATE_PUSH_ALIGN_SETTLE,
                         BALL_APPROACH_REASON_REALIGN, now_us);
         } else if (controller->state ==
                    BALL_APPROACH_STATE_PUSH_ALIGN_PULSE) {
-            decision.command = route_shift_command(
-                controller, controller->turn_direction);
+            decision.command = push_align_command(controller);
         }
         break;
 
