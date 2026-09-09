@@ -14,6 +14,7 @@ enum {
     DEGRADED_ENCODER = 1U << 0,
     DEGRADED_DIAGNOSTICS = 1U << 1,
     DEGRADED_DISPLAY = 1U << 2,
+    DEGRADED_ARM_LINK = 1U << 3,
     RIGHT_STRAFE_CALIBRATION_DURATION_US = 1000000,
 };
 
@@ -33,6 +34,7 @@ typedef struct {
     bool preview_disable;
     bool ball_approach;
     bool ball_mission;
+    bool arm_ping;
 } command_intents_t;
 
 static void enable_status_display(app_controller_t *controller)
@@ -200,6 +202,7 @@ static command_intents_t parse_commands(command_batch_t batch,
         case 'z': intents.preview_disable = true; break;
         case 'b': intents.ball_approach = true; break;
         case 'n': intents.ball_mission = true; break;
+        case 'i': intents.arm_ping = true; break;
         default: break;
         }
     }
@@ -210,6 +213,7 @@ static command_intents_t parse_commands(command_batch_t batch,
         intents.self_test = 0;
         intents.ball_approach = false;
         intents.ball_mission = false;
+        intents.arm_ping = false;
     } else if (intents.force_auto) {
         intents.boot = false;
         intents.motion = 0;
@@ -448,7 +452,27 @@ static void apply_intents(app_controller_t *controller,
     if (intents.help) {
         publish_event(controller, DIAGNOSTIC_EVENT_INFO, 0,
                       controller->speed,
-                      "f line+avoid+3s+mission; n mission; x stop",
+                      "f auto; n mission; i arm ping; x stop",
+                      now_us);
+    }
+    if (intents.arm_ping) {
+        uint16_t sequence = 0;
+        /* PING is a diagnostics-only frame and must remain available while
+         * the car is fault-latched (for example, with the camera unplugged).
+         * FAULT and IDLE both produce a zero motor command below. */
+        const bool safe =
+            (controller->mode == APP_MODE_IDLE ||
+             controller->mode == APP_MODE_FAULT) &&
+            controller->arm_link_ready &&
+            !intents.force_auto && !intents.boot && !intents.motion &&
+            !intents.self_test && !intents.ball_approach &&
+            !intents.ball_mission;
+        const esp_err_t result = safe ?
+            arm_link_send_ping(&controller->arm_link, &sequence) :
+            ESP_ERR_INVALID_STATE;
+        publish_event(controller, DIAGNOSTIC_EVENT_INFO, result, sequence,
+                      result == ESP_OK ? "arm_ping_sent" :
+                                         "arm_ping_rejected",
                       now_us);
     }
     if (intents.preview_enable || intents.preview_disable) {
@@ -594,6 +618,24 @@ static void controller_step(app_controller_t *controller, int64_t now_us)
     controller->latest_camera = camera_line_sensor_snapshot(
         &controller->camera_line, now_us);
     controller->latest_line = controller->latest_camera.virtual_sensors;
+    if (controller->arm_link_ready) {
+        arm_link_event_t arm_event;
+        if (arm_link_poll(&controller->arm_link, &arm_event)) {
+            const char *text = arm_event.kind == ARM_LINK_EVENT_PONG ?
+                                   "arm_pong_received" :
+                               arm_event.kind == ARM_LINK_EVENT_ACK ?
+                                   "arm_ack_received" :
+                               arm_event.kind == ARM_LINK_EVENT_BUSY ?
+                                   "arm_busy_received" :
+                               arm_event.kind == ARM_LINK_EVENT_DONE ?
+                                   "arm_done_received" :
+                               arm_event.kind == ARM_LINK_EVENT_ERROR ?
+                                   "arm_error_received" :
+                                   "arm_unknown_frame";
+            publish_event(controller, DIAGNOSTIC_EVENT_INFO,
+                          arm_event.kind, arm_event.sequence, text, now_us);
+        }
+    }
     ultrasonic_event_t ultrasonic_event;
     const bool has_ultrasonic_event = ultrasonic_take_event(
         &controller->ultrasonic, &ultrasonic_event);
@@ -776,6 +818,13 @@ bool app_controller_init(app_controller_t *controller,
     } else {
         controller->degraded_bitmap |= DEGRADED_DISPLAY;
     }
+    if (arm_link_init(&controller->arm_link,
+                      BOARD_PIN_ARM_LINK_TX,
+                      BOARD_PIN_ARM_LINK_RX) == ESP_OK) {
+        controller->arm_link_ready = true;
+    } else {
+        controller->degraded_bitmap |= DEGRADED_ARM_LINK;
+    }
     if (motor_result != MOTOR_RESULT_OK) {
         set_fault(controller, FAULT_SOURCE_MOTOR, motor_result,
                   motor_result == MOTOR_RESULT_RECOVERABLE_FAULT ?
@@ -808,7 +857,9 @@ bool app_controller_init(app_controller_t *controller,
     if (result != ESP_OK) {
         set_fault(controller, FAULT_SOURCE_CAMERA, result,
                   FAULT_UNRECOVERABLE_THIS_BOOT);
-        return false;
+        /* Keep the zero-output control loop and diagnostics links alive.
+         * Motion commands remain blocked by fault_bitmap until a clean
+         * reboot detects the camera successfully. */
     }
     const encoder_config_t encoder_config = {
         .a_pin = {BOARD_PIN_ENCODER_A_A, BOARD_PIN_ENCODER_B_A,
@@ -860,7 +911,7 @@ bool app_controller_init(app_controller_t *controller,
                       esp_timer_get_time());
     }
     controller->initialized = true;
-    return controller->fault_bitmap == 0;
+    return true;
 }
 
 bool app_controller_start(app_controller_t *controller)

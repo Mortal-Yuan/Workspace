@@ -2,6 +2,42 @@
 
 This file is the handoff summary for agents working in `smart-car-test`.
 
+## Robot Arm Extension (2026-09-08)
+
+For the new independent ESP32-controlled Zhongling J1 / ZP15D arm, read
+[机械臂J1_资料总结与接入交接.md](机械臂J1_资料总结与接入交接.md) first.
+It records the 23 supplied PDFs, KPZ-ESP32 bus/power/pin mapping, protocols,
+MicroPython workflow, source inconsistencies, and pending integration work.
+The arm was identified as ESP32-D0WD-V3 rev3.1, 4 MB flash, MAC
+`6c:c8:40:5c:ae:18` on CH340K COM4; this is NOT the car's ESP32-S3.
+The subsequent connected-arm check read MicroPython v1.18 and backed up all
+14 application/config files under `D:/Workspace/arm-readback/2026-09-08/`.
+All six servo IDs 000-005 answered position/mode/version queries through the
+existing UART2 (TX17/RX16); version is `ZL-ZServo_AD_CBM V2.1.16STG`.
+The initial check sent no motion/configuration command. A later user-authorized
+ID003-only test commanded 1496 -> 1518 -> 1496 at 1000 ms per movement;
+readback was 1514 outward and finally 1506 after return (not exact restoration).
+The subsequent user-authorized 30-degree test commanded ID003 from 1506 to
+1728 over 3000 ms, held about 2 seconds, and returned toward 1506 over 3000 ms;
+outward/final readbacks were 1730/1517. No other joint was commanded.
+The arm application is currently
+paused at REPL after Ctrl+C; do not silently reset it, because startup may move
+the arm. Supply scaling and loaded motion remain unverified. The bus connector uses
+VIN directly according to the supplied pin map; the baseboard's 6-12 V input
+rating does not authorize 12 V for the supplied 4.8-8.4 V servo family.
+
+Latest arm action: the user authorized one forward grab. G0003-G0007 ran once
+via the existing action scheduler with its final motion duration awaited;
+completion state was group_ok=1, group_times=0. Final positions for 000-005:
+1517,2106,2159,794,1496,1501. Gripper005 read 1501 versus target1700;
+physical grasp/obstruction is unconfirmed, so no extra squeeze was commanded.
+The subsequent user request was to release all torque. Individual PULK commands
+were sent to 000-005; no ACK was returned, but all six subsequent PID queries
+responded normally. Physical torque release awaits user observation. Do not
+restore torque or assume the preceding final posture is still being held.
+The main application remains paused at REPL.
+See `D:/Workspace/arm-readback/2026-09-08/forward-grab-once.txt`.
+
 ## Project Scope
 
 - Target board: ESP32-S3-DevKitC-1 / ESP32-S3-WROOM-2.

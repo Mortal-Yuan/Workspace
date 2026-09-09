@@ -13,6 +13,7 @@ idf_component_register(
         "control/obstacle_supervisor.c"
         "control/startup_maneuver.c"
         "diagnostics/diagnostics.c"
+        "drivers/arm_link.c"
         "drivers/camera_line_sensor.c"
         "drivers/encoder.c"
         "drivers/motor_driver.c"

@@ -5,6 +5,7 @@
 
 #include "app_config.h"
 #include "app_events.h"
+#include "arm_link.h"
 #include "ball_approach.h"
 #include "ball_mission.h"
 #include "camera_line_sensor.h"
@@ -52,6 +53,7 @@ typedef struct {
     ball_approach_t ball_approach;
     ball_mission_t ball_mission;
     diagnostics_t diagnostics;
+    arm_link_t arm_link;
     status_display_t display;
     camera_line_snapshot_t latest_camera;
     line_sensor_sample_t latest_line;
@@ -64,6 +66,7 @@ typedef struct {
     bool line_monitor;
     bool button_ready;
     bool diagnostics_ready;
+    bool arm_link_ready;
     bool display_ready;
     bool initialized;
     uint32_t control_overruns;
