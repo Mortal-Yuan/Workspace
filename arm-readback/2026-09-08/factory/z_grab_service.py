@@ -1,6 +1,6 @@
 """Explicit-command grab service. Construction and PING never move servos.
 
-Dedicated UART1: car TX GPIO1 -> arm RX21; arm TX22 -> car RX GPIO2.
+Dedicated Wi-Fi TCP connection to the car access point.
 The application must call poll() regularly. Never run alongside z_main's
 action scheduler: both would otherwise own servo UART2.
 """
@@ -32,9 +32,10 @@ class GrabService:
 
     def finish(self, result):
         self.last_sequence, self.last_result = self.sequence, result
-        self.emit(result, self.sequence)
+        sequence = self.sequence
         self.sequence = None
         self.state = 'IDLE'
+        self.emit(result, sequence)
 
     def handle(self, line, now):
         parts = line.split(',')
@@ -54,7 +55,7 @@ class GrabService:
                 self.stop()
                 self.finish('ERROR')
             self.emit('ACK', sequence)
-        elif command == 'GRAB':
+        elif command in ('GRAB','RELEASE'):
             if sequence == self.sequence:
                 self.emit('ACK', sequence)
             elif sequence == self.last_sequence:
@@ -64,10 +65,19 @@ class GrabService:
             else:
                 self.sequence = sequence
                 self.emit('ACK', sequence)
-                self.begin_read('START', now)
+                if command == 'RELEASE':
+                    frame = '#005P%04dT1000!' % pose.PICKUP_OPEN_POSE[5]
+                    if self.servo.write(frame) != len(frame):
+                        raise ValueError('Short release write')
+                    self.state = 'RELEASE_WAIT'
+                    self.deadline = time.ticks_add(now,1500)
+                else:
+                    self.begin_read('START', now)
 
     def begin_read(self, phase, now):
         self.phase, self.index, self.positions = phase, 0, []
+        if phase in ('OPEN','RELEASE'):
+            self.index = 5
         self.query(now)
 
     def query(self, now):
@@ -93,19 +103,43 @@ class GrabService:
                 value = self.reply[start+len(prefix):end]
                 if not value.isdigit():
                     raise ValueError('Malformed position')
-                self.positions.append(int(value))
+                position = int(value)
+                if not 500 <= position <= 2500:
+                    raise ValueError('Invalid position range')
+                self.positions.append(position)
                 self.index += 1
                 count = 5 if self.phase == 'FINAL' else 6
                 if self.index < count:
                     self.query(now)
                     return
-                expected = (pose.POST_GRAB_HOLD_POSE if self.phase in ('START','FINAL')
+                if self.phase == 'START':
+                    axes = self.positions[:5]
+                    starts = ((1500,)*5, pose.POST_GRAB_HOLD_POSE[:5])
+                    if not any(all(abs(a-b)<=40 for a,b in zip(axes,start))
+                               for start in starts):
+                        raise ValueError('Unsupported start pose')
+                    # Grip width varies with the object; reopen before descent.
+                    frame = '#005P%04dT1000!' % pose.PICKUP_OPEN_POSE[5]
+                    if self.servo.write(frame) != len(frame):
+                        raise ValueError('Short open write')
+                    self.state = 'OPEN_WAIT'
+                    self.deadline = time.ticks_add(now,1500)
+                    return
+                if self.phase == 'RELEASE':
+                    if abs(self.positions[0]-pose.PICKUP_OPEN_POSE[5])>40:
+                        raise ValueError('Release not reached')
+                    self.finish('DONE')
+                    return
+                if self.phase == 'OPEN':
+                    if abs(self.positions[0]-pose.PICKUP_OPEN_POSE[5])>40:
+                        raise ValueError('Gripper not open')
+                    self.begin_pose(pose.PICKUP_OPEN_POSE,3000,'LOW',now)
+                    return
+                expected = (pose.POST_GRAB_HOLD_POSE if self.phase == 'FINAL'
                             else pose.PICKUP_OPEN_POSE)
                 if any(abs(a-b)>40 for a,b in zip(self.positions,expected)):
                     raise ValueError('Position not reached')
-                if self.phase == 'START':
-                    self.begin_pose(pose.PICKUP_OPEN_POSE,3000,'LOW',now)
-                elif self.phase == 'LOW':
+                if self.phase == 'LOW':
                     frame = pose.close_gripper_command()
                     if self.servo.write(frame) != len(frame):
                         raise ValueError('Short gripper write')
@@ -129,6 +163,10 @@ class GrabService:
             self.begin_read(self.phase,now)
         elif self.state == 'CLOSE_WAIT' and time.ticks_diff(now,self.deadline)>=0:
             self.begin_pose(pose.POST_GRAB_HOLD_TARGETS,4000,'FINAL',now)
+        elif self.state == 'RELEASE_WAIT' and time.ticks_diff(now,self.deadline)>=0:
+            self.begin_read('RELEASE',now)
+        elif self.state == 'OPEN_WAIT' and time.ticks_diff(now,self.deadline)>=0:
+            self.begin_read('OPEN',now)
 
     def poll(self):
         now = time.ticks_ms()
@@ -143,15 +181,22 @@ class GrabService:
             if self.sequence is not None:
                 self.step(now)
         except Exception:
+            self.buffer = b''
             if self.sequence is not None:
                 self.stop()
-                self.finish('ERROR')
+                try:
+                    self.finish('ERROR')
+                except OSError:
+                    # A broken transport cannot deliver the error, but must
+                    # leave the action stopped and never restart on reconnect.
+                    pass
 
 
 def serve():
     from machine import UART
-    service = GrabService(UART(1,115200,tx=22,rx=21,timeout=0),
-                          UART(2,115201,tx=17,rx=16,timeout=0))
+    from factory.z_wifi_link import WifiLink
+    link = WifiLink()
+    service = GrabService(link, UART(2,115201,tx=17,rx=16,timeout=0))
     try:
         while True:
             service.poll()
@@ -159,3 +204,4 @@ def serve():
     finally:
         if service.sequence is not None:
             service.stop()
+        link.close()

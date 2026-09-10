@@ -6,9 +6,12 @@ ESP-IDF 5.4.4 bring-up project for an ESP32-S3 three-wheel omnidirectional smart
 `x` 停止；原巡线组合流程保留 `f` 入口。上电保持静止。
 详见 [脱机抓取说明](2026-09-10_脱机对齐抓取流程.md)。
 
+板间通信已改为小车Wi-Fi热点、机械臂TCP客户端，详见
+[Wi-Fi通信说明](2026-09-10_WiFi机械臂通信.md)。
+
 绿色物块抓取调试：使用带 pyserial 和 Tk 的 Python 运行
 `tools/cube_grab_monitor.py --port COM3`，显示 160×120 原图、绿色掩码、
-候选轮廓及中心；打开前关闭占用 COM3 的旧窗口。仅观察，未接入自动抓取。
+候选轮廓及中心；打开前关闭占用 COM3 的旧窗口。提供抓取启动、停止及通信测试按钮。
 详见 [绿色物块调试记录](2026-09-10_绿色物块抓取识别调试.md)。
 
 Current verified features:

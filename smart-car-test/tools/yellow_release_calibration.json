@@ -1,0 +1,23 @@
+{
+  "resolution": [
+    160,
+    120
+  ],
+  "fixture": "test-data/yellow-zone-release.rgb332",
+  "center": [
+    84.0,
+    55.6
+  ],
+  "tolerance": [
+    12,
+    20
+  ],
+  "area": 410,
+  "area_range": [
+    307,
+    513
+  ],
+  "confirmation_frames": 1,
+  "release_action": "open gripper at hold pose; await readback then IDLE",
+  "ultrasound": "valid and >=20mm; floor target arrival is visual, not pickup 20..40mm"
+}

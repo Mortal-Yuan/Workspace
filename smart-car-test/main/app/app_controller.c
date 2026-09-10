@@ -691,10 +691,29 @@ static void controller_step(app_controller_t *controller, int64_t now_us)
         cube_observation_t cube=camera_line_sensor_cube_snapshot(&controller->camera_line);
         ultrasonic_snapshot_t us=ultrasonic_snapshot(&controller->ultrasonic);
         cube_grab_state_t old=controller->cube_grab.state;
-        final_command=cube_grab_step(&controller->cube_grab,&cube,us.filtered_mm,
-            us.quality==ULTRASONIC_QUALITY_VALID && now_us>=us.updated_us &&
-            now_us-us.updated_us<300000 && us.raw_mm>=20,
-            cube_pong,cube_ack,cube_done,cube_error,now_us);
+        cube_observation_t remembered_yellow=camera_line_sensor_yellow_snapshot(&controller->camera_line);
+        cube_remember_target(&controller->cube_grab,&remembered_yellow,true,now_us);
+        bool distance_fresh=us.quality==ULTRASONIC_QUALITY_VALID && now_us>=us.updated_us &&
+            now_us-us.updated_us<300000 && us.raw_mm>=20;
+        if(controller->cube_grab.carrying) {
+            cube_observation_t yellow=camera_line_sensor_yellow_snapshot(&controller->camera_line);
+            final_command=cube_delivery_step(&controller->cube_grab,&yellow,us.filtered_mm,
+                distance_fresh,cube_ack,cube_done,cube_error,now_us);
+            if(controller->cube_grab.state==CUBE_DONE) {
+                controller->mode=APP_MODE_IDLE;
+                camera_line_sensor_cube_enable(&controller->camera_line,false);
+                publish_event(controller,DIAGNOSTIC_EVENT_INFO,0,0,"delivery_complete_idle",now_us);
+            }
+        } else {
+            final_command=cube_grab_step(&controller->cube_grab,&cube,us.filtered_mm,
+                distance_fresh,cube_pong,cube_ack,cube_done,cube_error,now_us);
+            if(controller->cube_grab.state==CUBE_DONE) {
+                controller->cube_grab.carrying=true;
+                controller->cube_grab.state=CUBE_SETTLE;
+                controller->cube_grab.deadline_us=now_us+700000;
+                publish_event(controller,DIAGNOSTIC_EVENT_INFO,0,0,"yellow_delivery_start",now_us);
+            }
+        }
         if (old!=controller->cube_grab.state) publish_event(controller,
             DIAGNOSTIC_EVENT_INFO,controller->cube_grab.state,cube.area,"cube_grab_state",now_us);
     } else if (controller->mode == APP_MODE_MANUAL) {
@@ -795,11 +814,11 @@ static void controller_step(app_controller_t *controller, int64_t now_us)
     }
     cube_grab_t *grab=&controller->cube_grab;
     if (result!=MOTOR_RESULT_OK && controller->mode==APP_MODE_CUBE_GRAB) cube_grab_abort(grab);
-    const char *arm_command=grab->send_stop ? "STOP" : grab->send_ping ? "PING" : grab->send_grab ? "GRAB" : NULL;
+    const char *arm_command=grab->send_stop ? "STOP" : grab->send_ping ? "PING" : grab->send_grab ? "GRAB" : grab->send_release ? "RELEASE" : NULL;
     if (arm_command) {
         /* Motor zero has already been applied before the GRAB write. */
         esp_err_t sent=arm_link_send_command(&controller->arm_link,arm_command,&controller->cube_arm_sequence);
-        grab->send_stop=grab->send_ping=grab->send_grab=false;
+        grab->send_stop=grab->send_ping=grab->send_grab=grab->send_release=false;
         if(sent!=ESP_OK) cube_grab_abort(grab);
         publish_event(controller,DIAGNOSTIC_EVENT_INFO,sent,controller->cube_arm_sequence,"cube_arm_command",now_us);
     }

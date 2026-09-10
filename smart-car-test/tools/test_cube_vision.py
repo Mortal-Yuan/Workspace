@@ -88,6 +88,11 @@ class CubeTests(unittest.TestCase):
     def image(self, predicate, color=0x2c):
         return bytes(color if predicate(x,y) else 0 for y in range(120) for x in range(160))
 
+    def test_bottom_clipped_regions_not_candidates(self):
+        for top,bottom in ((95,120),(92,118)):
+            _, candidates=detect(self.image(lambda x,y: 40<=x<70 and top<=y<bottom))
+            self.assertEqual(candidates,[])
+
     def test_square_and_rotated_square(self):
         for shape in (lambda x,y: 40<=x<70 and 40<=y<70,
                       lambda x,y: abs(x-70)+abs(y-60)<=22):

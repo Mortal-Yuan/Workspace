@@ -8,3 +8,6 @@ typedef struct {
 } camera_cube_workspace_t;
 cube_observation_t camera_cube_detect(camera_cube_workspace_t *w,
     const uint8_t *rgb332, uint32_t sequence, int64_t timestamp_us);
+
+cube_observation_t camera_yellow_detect(camera_cube_workspace_t *w,
+    const uint8_t *rgb332, uint32_t sequence, int64_t timestamp_us);

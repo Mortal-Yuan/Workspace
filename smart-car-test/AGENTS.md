@@ -2,6 +2,185 @@
 
 This file is the handoff summary for agents working in `smart-car-test`.
 
+## Search reacquisition stall fix (2026-09-10, latest)
+
+Prior search code restarted700ms settle for every reacquisition, even when
+no search yaw occurred. Field events alternated OBSERVE/SETTLE with zero output.
+Track search_moved separately. Reacquisition before any search pulse returns
+directly to OBSERVE; after yaw, stop and settle, preserving remaining pause
+if the pulse already ended. New tests prove first-frame GRAB/RELEASE after a
+short loss with no motion; existing actual-yaw reacquisition tests still pass.
+Host suite/build pass. App SHA256
+43dd1ecd045168f2bd252dbf263e0b5eef343f98aac8d73c3450d6a370efaf10.
+Flashed identified COM3; independent boot/partition/app digests matched.
+GUI restored, fresh IDLE/zero and PONG2/3 confirmed. No physical run started.
+
+## Border exclusion and lost-target search (2026-09-10, latest)
+
+User requested removing misleading bottom clipped candidates and searching
+toward last observed screen side when cube/yellow target is lost.
+PC detector now omits all edge-touching candidates, including bottom y>=117.
+Native cube/yellow reject bottom>=117 too (other exact borders already rejected).
+Separate remembered directions for cube and yellow, updated only by fresh
+detected unique frames. Screen x<78 remembers left, x>82 right; central frames
+retain last side. Yellow observations are remembered throughout pickup too.
+Missing/stale target: stop700ms then yaw450 for120ms, alternating700ms stopped
+observation until reacquired or explicitly stopped. No forward/arm trigger from
+memory. Invalid ultrasound/<20mm stops and restarts search with a pause.
+Reacquisition stops and settles700ms before normal alignment. No memory=no turn.
+Memory resets on new BOOT run; missing frames do not refresh it. No search time
+limit, as requested continued alignment; x stops. Tests cover both sides/phases,
+reacquisition, missing memory, invalid sensors; host and15 PC vision tests pass.
+App SHA256a72b37e53a75fcfd60d9bf669f833e2ab90a0445337d93273640da958133ea79.
+Older documentation saying lost targets always wait is superseded.
+Flashed verified COM3 MAC9c:cc:01:fb:8f:9c; boot/partition/app independent
+digests matched. GUI restarted with border exclusion. Fresh IDLE/zero and
+PONG1 confirmed. No physical search performed; report search-memory-check.json.
+
+## Yellow delivery integration (2026-09-10, latest)
+
+User approved current yellow location for release, same +/-12,+/-20px center
+tolerance and single-frame trigger. Captured yellow-zone-release.rgb332:
+center(84,55.6), pale-yellow area410, accepted307..513. Calibration JSON in tools.
+Car now detects yellow on the native160x120 preview task, independent of PC.
+After GRAB DONE: carrying=true, settle700ms, align/approach visible yellow,
+then stationary RELEASE; release DONE returns modeIDLE and disables cube vision.
+Lost/stale target stops (no blind search); too large/overshot target waits,
+does not back up. Valid ultrasound >=20mm remains required; forward stops<=40mm.
+Arrival for flat yellow floor patch is visual, not pickup ultrasound20..40mm.
+Wheel pulses180/120ms, yaw450,forward550 retained. No total alignment timeout.
+Arm RELEASE opens only005 P1200/T1000 from held pose, verifies within40P after
+1500ms, then DONE; no lower/raise movement. Car release ACK2s/DONE5s deadlines.
+Host tests include real far/release fixtures and release transition/fault checks.
+14 Python arm/Wi-Fi tests pass including release-only/idempotence/stuck gripper.
+Arm COM4 module uploaded and SHA256 verified
+56fe0f011eb0e4d39864b567533c0e38e5eab14ad06c8a3d67aed3a82631260e.
+Car app0xeabf0 SHA256faa0b80b4740214b7234874a0e7b88e4fb753093a34a16b7e6ef3ec14303d45f.
+Full physical delivery not yet tested; prior pending-delivery text is historical.
+Deployment complete: identified COM3, flashed and independently verified all
+three images. Camera GUI restored; fresh IDLE/zero and new PONG1 confirmed.
+Passive report ../.tmp-py/yellow-delivery-check.json. No motion triggered.
+
+## Longer pulses and requested yellow delivery (2026-09-10, in progress)
+
+User requests longer wheel pulses plus grab -> drive to pale-yellow floor
+region -> release block -> IDLE, standalone. Pulse durations now180ms beyond
+100mm and120ms near (was120/80); output strength and700ms settle unchanged.
+Host tests/build pass. App SHA2565bf35a2a662f6169eb5930650c88b9d9e8808ba126cacfadd6747a5bb04df0ca.
+Yellow delivery NOT implemented yet: awaiting user confirmation of target
+identity, release posture and a suitable near placement pose for calibration.
+Async questions pending. Saved tools/test-data/yellow-zone-far.rgb332.
+Provisional pale-yellow segmentation yields one region area55 center(68,30.8),
+box59,29..76,33. Quantized RGB: r>=176,g>=176,b>=96,-32<=r-g<=64,g-b>=32.
+Do not assume this distant snapshot determines a safe release distance.
+Longer-pulse app flashed to identified COM3; independent bootloader/partition/
+application digests pass. GUI restored; fresh IDLE/zero and PONG1/3 verified.
+Delivery remains pending the calibration answers, no delivery actions sent.
+
+## Single-frame grab confirmation (2026-09-10, latest)
+
+Field follow-up: BOOT run sent GRAB7 at174142ms and received ACK at174282ms.
+PC log missed DONE/ERROR, but user explicitly confirmed completion afterward.
+User requested release for another test: car x returned IDLE/zero, sent only
+servo005 P1200/T1000, readback1235 (within40P); resumed arm Wi-Fi service.
+
+User explicitly requested one-frame confirmation instead of accumulating three.
+cube_grab_step now enters WAIT_ACK and requests GRAB on the first new, fresh,
+qualifying stopped observation. Center +/-12,+/-20px, area1168..1946 and valid
+20..40mm range remain required. ACK/DONE deadlines and no-repeat behavior stay.
+Host regression and build pass, including first-frame trigger, no repeat while
+waiting ACK, boundary positions, stale vision and invalid range rejection.
+Stopped previous active run using x and confirmed IDLE/zero before deployment.
+Application0xea500 SHA25641C9481D415691510F0A5C492B690EAF295832C6CD990049CC52A273674CBC3F.
+Verified car COM3 MAC9c:cc:01:fb:8f:9c; flashed and independently matched all
+three image digests. Preview attach initially failed; after reset and retry,
+cube_live_control GUI resumed, fresh IDLE/zero statuses and PONG1..4 confirmed.
+No new physical GRAB sent; next BOOT uses single-frame confirmation.
+
+## Wider grab center tolerance (2026-09-10, latest)
+
+BOOT field run reached 38..39mm but remained OBSERVE: centered x prevented
+yaw, distance <=40 prevented forward, and y outside the old gate blocked GRAB.
+PC center stayed near (74,83). User requested wider center tolerance.
+cube_grab.c now accepts x=73.8+/-12px and y=68+/-20px (was +/-6,+/-8).
+Area1168..1946, range20..40mm and three fresh stopped detections still required.
+Host tests cover the observed center, new limits, outside limits and invalid
+range/sensor checks; host suite and build pass. Application0xea500 SHA256
+A34C58055908B9FC537329B9D6F260B378930681DE0CBB5FD816C733DAAC13CE.
+Stopped active run via x and confirmed IDLE/zero before flashing.
+Flashed verified car COM3 MAC9c:cc:01:fb:8f:9c; independent bootloader,
+partition and application digests matched. Reopened cube_live_control GUI.
+25s passive check:31 sampled statuses all fresh/IDLE/zero, PONG1..4 received.
+Report ../.tmp-py/wider-center-check.json. No new physical grab triggered.
+
+## Arm upright startup acceptance (2026-09-10, latest)
+
+User requested not rejecting the now-upright arm. GrabService accepts axes0..4
+within40P of either all1500 or saved hold readback; gripper may be anywhere
+in valid500..2500 range. First opens005 to1200/T1000, waits1500ms and verifies
+readback within40P before lowering. Low/final checks unchanged. Unreadable,
+out-of-range or unsupported arm poses still fail, and a jammed opening cannot
+start descent. 12 arm-service/Wi-Fi tests pass. Updated service uploaded to
+verified COM4 and on-board SHA256 matched local file; resumed without motion.
+No new physical GRAB was triggered for this code change. Car image unchanged.
+After deployment, Wi-Fi association remained up but TCP handshake stalled.
+Restarted only the arm STA interface and resumed service; ARM_WIFI_CONNECTED
+and fresh car arm_pong_received at t=471132ms/seq1 confirmed recovery.
+Car remained IDLE with zero motor command; no physical grab tested this turn.
+
+## No total alignment timeout (2026-09-10, latest)
+
+User explicitly requested continuing alignment beyond90s until ready.
+cube_grab_step no longer aborts based on started_us elapsed time. Retains
+PING/ACK2s, DONE20s, Wi-Fi heartbeat timeout, missing/stale sensor stops,
+minimum range and explicit x/STOP. Tests verify movement at120s, stale-sensor
+zero and arm-error abort afterward. Host tests/build pass. New app0xea500
+SHA25624037A4A0B6AA7D27ACDFF002A49AC24122C027645F47474153918796CECD277.
+Flashed on verified COM3; boot/partition/app independent digests passed.
+Fresh IDLE/zero startup and PONG1 confirmed; adjustment restarted via GUI.
+Do not run old PC helpers that send x after90/93/100s
+for this user-requested continuous adjustment. Use cube_live_control window
+command file to start once and leave adjustment running unless done/fault/x.
+
+## Grab movement strength (2026-09-10, latest)
+
+User reported insufficient force to overcome chassis static friction. Cube
+alignment now commands A/C=+/-450 (previously300); forward A/C=-550
+(previously-400). Pulses last120ms beyond100mm,80ms at/below100mm; existing
+700ms settle, fresh sensors, <=40mm forward stop and grab gates unchanged.
+Host tests cover far pulse expiry, near timing, turn signs and stopping at40mm.
+Build0xea520 SHA256
+7C39721E262D8D1A0F54C7D515E05BF4745770E0AE499A2DA796CB40F81F0106.
+Flashed on verified COM3 MAC9c:cc:01:fb:8f:9c; independent boot/partition/app
+digests passed. 12s startup check IDLE/zero and PONG passed. 10s explicit
+movement test logged -550,0,-550 and450,0,-450; then x confirmed IDLE/zero,
+overrun0. This verifies emitted commands, not physical distance/traction.
+Raw record ../.tmp-py/stronger-grab-check.json. No full grab completed.
+
+## Wi-Fi transport (2026-09-10, supersedes UART below)
+
+User authorized switching board-to-board communication to Wi-Fi. CMake now
+builds drivers/arm_wifi_link.c in place of arm_link.c (UART source retained).
+Car WPA2 AP CarArm-8F9C on channel6, TCP192.168.4.1:8266, one station.
+Arm factory/z_wifi_link.py connects automatically; existing servo UART2 and
+grab targets unchanged. 500ms HEART/0000 exchanges, 2s receive deadline,
+nonblocking socket operations during control. Disconnect emits ERROR for the
+last command and aborts active cube control; arm stops axes0..4, keeps gripper,
+clears buffered commands and does not restart on reconnect. Startup is idle.
+PING remains explicit diagnostics/new-run command, separate from heartbeat.
+See 2026-09-10_WiFi机械臂通信.md for deployment validation. UART-only failure
+records below describe the previous build, not this transport.
+
+Wi-Fi build0xea500 SHA256
+D4A4724B78068824F623EDD3AF62B63255BDC071CAA59F1E712613DE0E96603C
+flashed on verified COM3; bootloader/partition/app independent digests passed.
+Arm COM4 ID6cc8405cae18 modules deployed. Arm MCU reset proved board main.py
+auto-connects and answers PING7/8/9. Interrupted idle service: car ERROR and
+rejected PING; resumed service: PONG10/11/12. 48/48 IDLE zero-command statuses.
+Host regression and 10 arm service/transport tests pass. No GRAB/motion sent.
+Arm Wi-Fi association attempts retry every10s if AP unavailable, socket
+connection retries every1s. Existing UART failure is bypassed, not repaired.
+
 ## Standalone grab integration (2026-09-10, latest)
 
 User explicitly requested operation without the PC. BOOT now starts ONE cube

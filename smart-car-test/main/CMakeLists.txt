@@ -15,7 +15,7 @@ idf_component_register(
         "control/obstacle_supervisor.c"
         "control/startup_maneuver.c"
         "diagnostics/diagnostics.c"
-        "drivers/arm_link.c"
+        "drivers/arm_wifi_link.c"
         "drivers/camera_line_sensor.c"
         "drivers/encoder.c"
         "drivers/motor_driver.c"
@@ -33,5 +33,5 @@ idf_component_register(
         "drivers"
         "platform"
     REQUIRES esp_driver_gpio esp_driver_ledc esp_driver_spi esp_driver_uart
-             esp_jpeg esp_timer usb usb_host_uvc
+             esp_jpeg esp_timer usb usb_host_uvc esp_wifi esp_netif nvs_flash lwip
 )

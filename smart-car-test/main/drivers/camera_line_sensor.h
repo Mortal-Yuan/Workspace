@@ -56,6 +56,7 @@ typedef struct {
     bool preview_busy;
     camera_cube_workspace_t *cube_workspace;
     cube_observation_t cube;
+    cube_observation_t yellow;
     bool cube_enabled;
     bool preview_raw;
     bool preview_job_raw;
@@ -104,3 +105,5 @@ void camera_line_sensor_set_finish_detection_enabled(
 
 void camera_line_sensor_cube_enable(camera_line_sensor_t *sensor, bool enabled);
 cube_observation_t camera_line_sensor_cube_snapshot(camera_line_sensor_t *sensor);
+
+cube_observation_t camera_line_sensor_yellow_snapshot(camera_line_sensor_t *sensor);

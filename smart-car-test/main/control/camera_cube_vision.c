@@ -64,7 +64,7 @@ cube_observation_t camera_cube_detect(camera_cube_workspace_t *w,
                 if(q>=0 && w->mask[q] && !w->seen[q]) {w->seen[q]=1;w->queue[tail++]=q;}
             }
         }
-        if(tail<30 || dark<4 || dark*100<35*(int)tail || left==0 || top==0 || right==159 || bottom==119) continue;
+        if(tail<30 || dark<4 || dark*100<35*(int)tail || left==0 || top==0 || right==159 || bottom>=117) continue;
         point_t points[240],hull[480];int n=0;
         for(int y=top;y<=bottom;y++) if(row_right[y]>=0) {
             points[n++]=(point_t){row_left[y],y};
@@ -112,6 +112,40 @@ cube_observation_t camera_cube_detect(camera_cube_workspace_t *w,
         if(ratio<0.5 || ratio>2 || color*10<6*(int)tail || !(best_fill>=0.83 || angular)) continue;
         if(tail>best.area) best=(cube_observation_t){true,sequence,timestamp_us,tail,
             (sumx*10+(int)tail/2)/(int)tail,(sumy*10+(int)tail/2)/(int)tail,bw,bh};
+    }
+    return best;
+}
+
+// Pale yellow calibrated from the user's distant and release-position frames.
+cube_observation_t camera_yellow_detect(camera_cube_workspace_t *w,
+    const uint8_t *pixels,uint32_t sequence,int64_t timestamp_us)
+{
+    cube_observation_t best={.sequence=sequence,.timestamp_us=timestamp_us};
+    for(int i=0;i<CUBE_PIXELS;i++) {
+        int v=pixels[i],r=(v>>5)*32+16,g=((v>>2)&7)*32+16,b=(v&3)*64+32;
+        w->mask[i]=r>=176 && g>=176 && b>=96 && r-g>=-32 && r-g<=64 && g-b>=32;
+    }
+    memset(w->seen,0,CUBE_PIXELS);
+    for(int seed=0;seed<CUBE_PIXELS;seed++) {
+        if(!w->mask[seed] || w->seen[seed]) continue;
+        unsigned head=0,tail=1;w->queue[0]=seed;w->seen[seed]=1;
+        int sx=0,sy=0,l=159,r=0,t=119,b=0;
+        while(head<tail) {
+            int i=w->queue[head++],x=i%160,y=i/160;
+            sx+=x;sy+=y;
+            if(x<l) l=x;
+            if(x>r) r=x;
+            if(y<t) t=y;
+            if(y>b) b=y;
+            int neighbors[4]={x?i-1:-1,x<159?i+1:-1,y?i-160:-1,y<119?i+160:-1};
+            for(int k=0;k<4;k++) {
+                int n=neighbors[k];
+                if(n>=0 && w->mask[n] && !w->seen[n]) {w->seen[n]=1;w->queue[tail++]=n;}
+            }
+        }
+        if(tail<20 || l==0 || r==159 || t==0 || b>=117) continue;
+        if(tail>best.area) best=(cube_observation_t){true,sequence,timestamp_us,tail,
+            (sx*10+(int)tail/2)/(int)tail,(sy*10+(int)tail/2)/(int)tail,r-l+1,b-t+1};
     }
     return best;
 }

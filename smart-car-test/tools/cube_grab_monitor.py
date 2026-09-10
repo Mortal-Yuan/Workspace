@@ -127,6 +127,9 @@ def detect(pixels, width=160, height=120, dominance=15, minimum_area=30):
             continue
         xs, ys = zip(*points)
         left, right, top, bottom = min(xs), max(xs), min(ys), max(ys)
+        # Discard clipped blobs, including the bottom quantization margin.
+        if left == 0 or top == 0 or right == width-1 or bottom >= height-3:
+            continue
         bw, bh = right-left+1, bottom-top+1
         fill = area / (bw*bh)
         # Find the most compact oriented bounding rectangle. This accepts

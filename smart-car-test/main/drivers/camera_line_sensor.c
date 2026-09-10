@@ -345,7 +345,15 @@ static void preview_task(void *argument)
                 cube_observation_t cube=camera_cube_detect(sensor->cube_workspace,
                     sensor->cube_workspace->work,sensor->preview_sequence,
                     (int64_t)sensor->preview_timestamp_ms*1000);
+                for (unsigned i=0;i<CUBE_PIXELS;i++) {
+                    const uint8_t *p=sensor->preview_rgb_buffer+3*i;
+                    sensor->cube_workspace->work[i]=(p[0]&0xe0)|((p[1]>>3)&0x1c)|(p[2]>>6);
+                }
+                cube_observation_t yellow=camera_yellow_detect(sensor->cube_workspace,
+                    sensor->cube_workspace->work,sensor->preview_sequence,
+                    (int64_t)sensor->preview_timestamp_ms*1000);
                 portENTER_CRITICAL(&sensor->lock);
+                sensor->yellow=yellow;
                 sensor->cube=cube;
                 portEXIT_CRITICAL(&sensor->lock);
             }
@@ -696,6 +704,14 @@ cube_observation_t camera_line_sensor_cube_snapshot(camera_line_sensor_t *sensor
 {
     portENTER_CRITICAL(&sensor->lock);
     cube_observation_t result=sensor->cube;
+    portEXIT_CRITICAL(&sensor->lock);
+    return result;
+}
+
+cube_observation_t camera_line_sensor_yellow_snapshot(camera_line_sensor_t *sensor)
+{
+    portENTER_CRITICAL(&sensor->lock);
+    cube_observation_t result=sensor->yellow;
     portEXIT_CRITICAL(&sensor->lock);
     return result;
 }
