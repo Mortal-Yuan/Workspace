@@ -12,8 +12,13 @@ enum {
     CAMERA_PREVIEW_HEIGHT = 60,
     CAMERA_PREVIEW_PIXEL_COUNT =
         CAMERA_PREVIEW_WIDTH * CAMERA_PREVIEW_HEIGHT,
+    CAMERA_PREVIEW_MAX_WIDTH = 160,
+    CAMERA_PREVIEW_MAX_HEIGHT = 120,
+    CAMERA_PREVIEW_MAX_PIXELS =
+        CAMERA_PREVIEW_MAX_WIDTH * CAMERA_PREVIEW_MAX_HEIGHT,
     CAMERA_PREVIEW_VERSION = 1,
     CAMERA_PREVIEW_PIXEL_FORMAT_RGB332 = 1,
+    CAMERA_PREVIEW_FLAG_RAW = 1U << 5,
     CAMERA_PREVIEW_FLAG_FRAME_VALID = 1U << 0,
     CAMERA_PREVIEW_FLAG_LINE_DETECTED = 1U << 1,
     CAMERA_PREVIEW_FLAG_FINISH_DETECTED = 1U << 2,
@@ -41,7 +46,7 @@ typedef struct __attribute__((packed)) {
     int16_t steering_permille;
     uint16_t payload_size;
     uint32_t payload_crc32;
-    uint8_t pixels[CAMERA_PREVIEW_PIXEL_COUNT];
+    uint8_t pixels[CAMERA_PREVIEW_MAX_PIXELS];
 } camera_preview_packet_t;
 
 typedef void (*camera_preview_sink_t)(
@@ -56,4 +61,8 @@ bool camera_preview_build_rgb332(
     const camera_ball_observation_t *ball,
     const camera_ball_observation_t *left_target,
     const camera_ball_observation_t *right_target,
+    uint32_t sequence, uint32_t timestamp_ms);
+
+bool camera_preview_build_raw_rgb332(camera_preview_packet_t *packet,
+    const uint8_t *rgb888, size_t width, size_t height,
     uint32_t sequence, uint32_t timestamp_ms);

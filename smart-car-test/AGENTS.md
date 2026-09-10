@@ -2,6 +2,108 @@
 
 This file is the handoff summary for agents working in `smart-car-test`.
 
+## Standalone grab integration (2026-09-10, latest)
+
+User explicitly requested operation without the PC. BOOT now starts ONE cube
+grab run from IDLE (also serial `l`); `f` retains the old combined driving
+workflow. `x` stops and returns to IDLE, aborting an active arm grab while
+retaining the gripper. Startup remains stationary. Do not assume old BOOT
+behavior below still applies to this build.
+
+Native 160x120 dark-green cube vision is in `camera_cube_vision.c`, on the
+independent preview task even when UART preview is off during a grab run.
+PC templates/weak memory remain diagnostics; native strict detections gate
+the grab. `cube_grab.c` uses the saved center (73.8,68.0), tolerances (6,8) px,
+area 1168..1946, ultrasound20..40mm and 3 stopped fresh frames. Turns300 and
+forward400 use 80ms pulses followed by 700ms stopped observation. Missing or
+stale sensors stop movement. No physical pulse-distance validation yet.
+
+UART1 GPIO1/2 talks directly to arm RX21/TX22 at115200. PING,GRAB,STOP use
+4-digit sequences and PONG/ACK/DONE/ERROR responses. GRAB is sent only after
+the zero motor command; no automatic resend. Arm main.py now starts only
+`factory.z_grab_service.serve()` (no startup motion); original board main.py
+is saved as main_before_grab_20260910.py. Do not run factory.z_main concurrently.
+Arm unique ID6cc8405cae18 verified on COM4 and modules uploaded. MCU reset on
+the car does not abort an independently running arm action.
+
+See `2026-09-10_脱机对齐抓取流程.md` for usage and limitations. C tests include
+5 real fixtures and control transitions; 14 PC vision tests and 4 arm service
+tests pass. Full new autonomous approach/grab has not been motion-tested.
+
+Final car binary0x63930 SHA256
+145F6052FEEDA40017C1A1C02B718B74C3477775194401BD5D232D1E1F49111E
+was flashed and all three images independently verified. Passive first check:
+22 frames/CRC0,29 fresh IDLE zero-command statuses. Follow-up:21 frames/CRC1
+(discarded),29 fresh IDLE zero-command statuses. BLOCKER: car PING4/5/6 were
+sent but no PONG received; explicit arm TX22 PONG9000 also not observed by car.
+Awaiting user confirmation of car1->arm21,arm22->car2 and common GND wiring.
+Update: user confirmed car1->SD6 and car2->SA6; prior verified docs map these
+to armGPIO21/22 respectively, so signal mapping is correct. A direct 9-second
+UART1 RX21 trace bypassing the grab parser received zero bytes while car
+logged PING7/8/9 sent. Awaiting physical GND/contact check; service resumed.
+Arm service is running, no GRAB sent. Current GUI offers start/stop/link-test.
+
+Latest follow-up: user confirmed common GND, and yesterday's docs explicitly
+recorded successful PING/PONG on these same pins. Tested original onboard
+ZL_CAR_LINK.serve_for(9000) directly, bypassing the new grab service and GUI:
+car logged PING1/2/3 but no PONG. Repeated with raw UART1 RX capture while
+sending PING4/5/6: zero RX bytes, GPIO21 sampled high192336/low0 (sampling
+alone is not proof of no short electrical transitions). Explicit UART1 TX22
+wrote 20 PONG frames (14 bytes accepted each), no car PONG event observed.
+Car UART init/pins/read parser are unchanged from tracked baseline; PING
+format remains identical. Cause is unresolved; software buffer acceptance
+does not prove signals reach physical pins. Arm grab service resumed without
+motion. Logs: ../.tmp-py/old-link-test.txt and direct-link-car.json.
+
+## Green block debug window (2026-09-10)
+
+`tools/cube_grab_monitor.py --port COM3` is the separate passive green-block
+window. It analyzes raw 160x120 RGB332 frames on the PC; existing car line/ball
+analysis remains 80x60. UART `o` enables raw preview (flags bit5), `u` selects
+the original annotated preview, and `z` closes it. The worker preserves its
+selected preview command during heartbeat/reconnection. One program owns COM3
+at a time. Raw mode is snapshotted with the JPEG job and uses the existing
+independent low-priority preview task. No arm/motor action is added.
+The PC tracker now retains a strictly confirmed target for 2 seconds and can
+associate up to 2 nearby, size-compatible weak shape observations. Weak
+observations never refresh the anchor or deadline; cyan indicates memory
+assistance, and a completely missing target is never drawn as detected.
+The 11 Python tests cover recovery, expiry, duplicate frames, mismatches and
+two saved real cube angles. New-angle calibration adds 3x3 mask closing,
+enclosed-hole filling and 6%-of-extent polygon simplification; strict candidates
+require >=60% original green support. A user-confirmed side-angle template in
+tools/cube_shape_calibration.json additionally matches normalized silhouette
+and internal green distribution (IoU >=0.88/0.65), allowing 50%-80% green
+support under darker faces. Latest dark/far calibration admits dark RGB332
+0x29 via a limited blue-quantization tolerance, rejects bright pixels, and
+requires >=4 dark seeds covering >=35% of each region. Default minimum area
+is 30 pixels. Four real fixtures and 14 tests cover dark distant targets,
+prior angles, bright noise and tracking. See tools/test-data.
+See `2026-09-10_绿色物块抓取识别调试.md` and `tools/test_cube_vision.py` for
+algorithm boundaries, launch instructions and validation.
+
+## Latest USB preview change (2026-09-10)
+
+The debugging preview now carries real 160x120 RGB332 pixels (maximum 19200
+payload bytes, 19236 bytes including the unchanged v1 header), not an enlarged
+80x60 image. The camera still streams MJPEG 640x480 at 15 fps and recognition
+still decodes at 1/8 to the calibrated 80x60 input. Only an enabled preview
+copies one JPEG plus its matching observations to a dedicated priority-2 task,
+which decodes at 1/4, draws overlays and writes UART. One busy slot prevents
+queued preview work from building up; recognition never waits for UART or
+high-resolution preview decoding. Preview requests are spaced at least 600 ms
+apart for 460800-baud bandwidth. The Python monitor accepts both 80x60 and
+160x120 packets, and displays actual dimensions and FPS.
+
+The first same-task high-resolution decoder produced some stale-camera status
+samples during the live preview check; it was replaced by the independent task
+above. See `2026-09-10_摄像头预览分辨率提升.md` for final validation and artifact.
+The final 12-second passive check received 19 CRC-valid 160x120 frames;
+all 23 status samples were fresh, IDLE, zero-command, with cam_err=0.
+Bootloader, partition and application passed independent flash digest checks.
+Final app size is 0x60800 and SHA-256 is
+`77DB02C7D0D34450D2D21D45482270C31287BDFE06B034E63D2050CC74FE938C`.
+
 ## Robot Arm Extension (2026-09-08)
 
 For the new independent ESP32-controlled Zhongling J1 / ZP15D arm, read

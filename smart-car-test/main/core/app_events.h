@@ -19,6 +19,7 @@ typedef enum {
     APP_MODE_BALL_APPROACH,
     APP_MODE_BALL_MISSION,
     APP_MODE_FAULT,
+    APP_MODE_CUBE_GRAB,
 } app_mode_t;
 
 typedef enum {

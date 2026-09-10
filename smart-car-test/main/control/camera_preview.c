@@ -6,7 +6,7 @@ static const uint8_t CAMERA_PREVIEW_MAGIC[8] = {
     0xa5, 0x5a, 0xc3, 0x3c, 'S', 'C', 'V', '1',
 };
 
-_Static_assert(sizeof(camera_preview_packet_t) == 4836,
+_Static_assert(sizeof(camera_preview_packet_t) == 19236,
                "camera preview wire packet size changed");
 
 static int clamp_int(int value, int minimum, int maximum)
@@ -140,11 +140,15 @@ bool camera_preview_build_rgb332(
         return false;
     }
 
+    const size_t preview_width = width < CAMERA_PREVIEW_MAX_WIDTH ?
+        width : CAMERA_PREVIEW_MAX_WIDTH;
+    const size_t preview_height = height < CAMERA_PREVIEW_MAX_HEIGHT ?
+        height : CAMERA_PREVIEW_MAX_HEIGHT;
     memset(packet, 0, sizeof(*packet));
     memcpy(packet->magic, CAMERA_PREVIEW_MAGIC, sizeof(packet->magic));
     packet->version = CAMERA_PREVIEW_VERSION;
-    packet->width = CAMERA_PREVIEW_WIDTH;
-    packet->height = CAMERA_PREVIEW_HEIGHT;
+    packet->width = preview_width;
+    packet->height = preview_height;
     packet->pixel_format = CAMERA_PREVIEW_PIXEL_FORMAT_RGB332;
     packet->flags = (analysis->valid ? CAMERA_PREVIEW_FLAG_FRAME_VALID : 0) |
         (analysis->line_detected ? CAMERA_PREVIEW_FLAG_LINE_DETECTED : 0) |
@@ -160,7 +164,7 @@ bool camera_preview_build_rgb332(
     packet->center_permille = analysis->center_permille;
     packet->far_center_permille = analysis->far_center_permille;
     packet->steering_permille = analysis->steering_permille;
-    packet->payload_size = CAMERA_PREVIEW_PIXEL_COUNT;
+    packet->payload_size = preview_width * preview_height;
 
     const size_t source_roi_left = width *
         (size_t)config->roi_left_permille / 1000U;
@@ -170,18 +174,18 @@ bool camera_preview_build_rgb332(
         (size_t)config->roi_top_permille / 1000U;
     const size_t source_roi_bottom = height *
         (size_t)config->roi_bottom_permille / 1000U;
-    for (size_t preview_y = 0; preview_y < CAMERA_PREVIEW_HEIGHT;
+    for (size_t preview_y = 0; preview_y < preview_height;
          ++preview_y) {
         const size_t source_y_begin =
-            preview_y * height / CAMERA_PREVIEW_HEIGHT;
+            preview_y * height / preview_height;
         const size_t source_y_end =
-            (preview_y + 1U) * height / CAMERA_PREVIEW_HEIGHT;
-        for (size_t preview_x = 0; preview_x < CAMERA_PREVIEW_WIDTH;
+            (preview_y + 1U) * height / preview_height;
+        for (size_t preview_x = 0; preview_x < preview_width;
              ++preview_x) {
             const size_t source_x_begin =
-                preview_x * width / CAMERA_PREVIEW_WIDTH;
+                preview_x * width / preview_width;
             const size_t source_x_end =
-                (preview_x + 1U) * width / CAMERA_PREVIEW_WIDTH;
+                (preview_x + 1U) * width / preview_width;
             uint32_t sum_red = 0;
             uint32_t sum_green = 0;
             uint32_t sum_blue = 0;
@@ -214,31 +218,31 @@ bool camera_preview_build_rgb332(
                 (uint8_t)(sum_blue / sample_count),
             };
             const size_t preview_index =
-                preview_y * CAMERA_PREVIEW_WIDTH + preview_x;
+                preview_y * preview_width + preview_x;
             packet->pixels[preview_index] = contains_black ?
                 0xe0 : rgb332(averaged_rgb);
         }
     }
 
-    const int roi_left = (int)(CAMERA_PREVIEW_WIDTH *
+    const int roi_left = (int)(preview_width *
         (size_t)config->roi_left_permille / 1000U);
-    const int roi_right = clamp_int((int)(CAMERA_PREVIEW_WIDTH *
+    const int roi_right = clamp_int((int)(preview_width *
         (size_t)config->roi_right_permille / 1000U), roi_left + 1,
-        CAMERA_PREVIEW_WIDTH);
-    const int roi_top = (int)(CAMERA_PREVIEW_HEIGHT *
+        preview_width);
+    const int roi_top = (int)(preview_height *
         (size_t)config->roi_top_permille / 1000U);
-    const int roi_bottom = clamp_int((int)(CAMERA_PREVIEW_HEIGHT *
+    const int roi_bottom = clamp_int((int)(preview_height *
         (size_t)config->roi_bottom_permille / 1000U), roi_top + 1,
-        CAMERA_PREVIEW_HEIGHT);
+        preview_height);
 
     /* Yellow is the exact analysis ROI. */
     for (int x = roi_left; x < roi_right; ++x) {
-        packet->pixels[roi_top * CAMERA_PREVIEW_WIDTH + x] = 0xfc;
-        packet->pixels[(roi_bottom - 1) * CAMERA_PREVIEW_WIDTH + x] = 0xfc;
+        packet->pixels[roi_top * preview_width + x] = 0xfc;
+        packet->pixels[(roi_bottom - 1) * preview_width + x] = 0xfc;
     }
     for (int y = roi_top; y < roi_bottom; ++y) {
-        packet->pixels[y * CAMERA_PREVIEW_WIDTH + roi_left] = 0xfc;
-        packet->pixels[y * CAMERA_PREVIEW_WIDTH + roi_right - 1] = 0xfc;
+        packet->pixels[y * preview_width + roi_left] = 0xfc;
+        packet->pixels[y * preview_width + roi_right - 1] = 0xfc;
     }
 
     if (analysis->line_detected) {
@@ -285,5 +289,28 @@ bool camera_preview_build_rgb332(
 
     packet->payload_crc32 = camera_preview_crc32(
         packet->pixels, packet->payload_size);
+    return true;
+}
+
+bool camera_preview_build_raw_rgb332(camera_preview_packet_t *packet,
+    const uint8_t *rgb888, size_t width, size_t height,
+    uint32_t sequence, uint32_t timestamp_ms)
+{
+    if (packet == NULL || rgb888 == NULL ||
+        width != CAMERA_PREVIEW_MAX_WIDTH || height != CAMERA_PREVIEW_MAX_HEIGHT)
+        return false;
+    memset(packet, 0, sizeof(*packet));
+    memcpy(packet->magic, CAMERA_PREVIEW_MAGIC, sizeof(packet->magic));
+    packet->version = CAMERA_PREVIEW_VERSION;
+    packet->width = width;
+    packet->height = height;
+    packet->pixel_format = CAMERA_PREVIEW_PIXEL_FORMAT_RGB332;
+    packet->flags = CAMERA_PREVIEW_FLAG_RAW | CAMERA_PREVIEW_FLAG_FRAME_VALID;
+    packet->sequence = sequence;
+    packet->timestamp_ms = timestamp_ms;
+    packet->payload_size = width * height;
+    for (size_t i = 0; i < packet->payload_size; ++i)
+        packet->pixels[i] = rgb332(rgb888 + 3 * i);
+    packet->payload_crc32 = camera_preview_crc32(packet->pixels, packet->payload_size);
     return true;
 }

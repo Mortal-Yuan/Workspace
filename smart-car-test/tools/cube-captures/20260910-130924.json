@@ -1,0 +1,329 @@
+{
+  "sequence": 15698,
+  "candidates": [
+    {
+      "box": [
+        51,
+        46,
+        94,
+        91
+      ],
+      "center": [
+        73.76364804110469,
+        67.95375722543352
+      ],
+      "area": 1557,
+      "fill": 0.769,
+      "accepted": true,
+      "solidity": 0.972,
+      "polygon": [
+        [
+          51,
+          71
+        ],
+        [
+          59,
+          48
+        ],
+        [
+          88,
+          46
+        ],
+        [
+          94,
+          66
+        ],
+        [
+          89,
+          91
+        ],
+        [
+          62,
+          89
+        ]
+      ],
+      "color_support": 0.974,
+      "calibrated": false,
+      "shape_match": 0.85,
+      "green_match": 0.474,
+      "dark_support": 0.952,
+      "reason": "物块候选"
+    },
+    {
+      "box": [
+        137,
+        16,
+        157,
+        37
+      ],
+      "center": [
+        146.27011494252875,
+        27.235632183908045
+      ],
+      "area": 174,
+      "fill": 0.381,
+      "accepted": false,
+      "solidity": 0.579,
+      "polygon": [
+        [
+          137,
+          17
+        ],
+        [
+          157,
+          16
+        ],
+        [
+          150,
+          35
+        ],
+        [
+          143,
+          37
+        ],
+        [
+          140,
+          35
+        ]
+      ],
+      "color_support": 0.707,
+      "calibrated": false,
+      "shape_match": 0.473,
+      "green_match": 0.192,
+      "dark_support": 0.707,
+      "reason": "形状待确认"
+    },
+    {
+      "box": [
+        131,
+        0,
+        159,
+        16
+      ],
+      "center": [
+        148.08219178082192,
+        6.671232876712328
+      ],
+      "area": 146,
+      "fill": 0.319,
+      "accepted": false,
+      "solidity": 0.529,
+      "polygon": [
+        [
+          131,
+          13
+        ],
+        [
+          147,
+          0
+        ],
+        [
+          159,
+          0
+        ],
+        [
+          158,
+          10
+        ],
+        [
+          131,
+          16
+        ]
+      ],
+      "color_support": 0.623,
+      "calibrated": false,
+      "shape_match": 0.252,
+      "green_match": 0.183,
+      "dark_support": 0.555,
+      "reason": "边缘截断"
+    },
+    {
+      "box": [
+        36,
+        0,
+        47,
+        8
+      ],
+      "center": [
+        41.204081632653065,
+        4.73469387755102
+      ],
+      "area": 49,
+      "fill": 0.471,
+      "accepted": false,
+      "solidity": 0.838,
+      "polygon": [
+        [
+          36,
+          4
+        ],
+        [
+          46,
+          0
+        ],
+        [
+          47,
+          3
+        ],
+        [
+          43,
+          8
+        ],
+        [
+          36,
+          8
+        ]
+      ],
+      "color_support": 0.531,
+      "calibrated": false,
+      "shape_match": 0.472,
+      "green_match": 0.22,
+      "dark_support": 0.531,
+      "reason": "边缘截断"
+    },
+    {
+      "box": [
+        31,
+        19,
+        44,
+        24
+      ],
+      "center": [
+        37.108108108108105,
+        22.0
+      ],
+      "area": 37,
+      "fill": 0.471,
+      "accepted": false,
+      "solidity": 0.949,
+      "polygon": [
+        [
+          32,
+          21
+        ],
+        [
+          38,
+          19
+        ],
+        [
+          44,
+          23
+        ],
+        [
+          34,
+          24
+        ],
+        [
+          31,
+          23
+        ]
+      ],
+      "color_support": 0.432,
+      "calibrated": false,
+      "shape_match": 0.485,
+      "green_match": 0.17,
+      "dark_support": 0.432,
+      "reason": "形状待确认"
+    },
+    {
+      "box": [
+        0,
+        12,
+        8,
+        20
+      ],
+      "center": [
+        3.764705882352941,
+        16.294117647058822
+      ],
+      "area": 34,
+      "fill": 0.482,
+      "accepted": false,
+      "solidity": 0.861,
+      "polygon": [
+        [
+          0,
+          16
+        ],
+        [
+          2,
+          12
+        ],
+        [
+          8,
+          15
+        ],
+        [
+          8,
+          16
+        ],
+        [
+          3,
+          20
+        ],
+        [
+          1,
+          19
+        ]
+      ],
+      "color_support": 0.471,
+      "calibrated": false,
+      "shape_match": 0.487,
+      "green_match": 0.175,
+      "dark_support": 0.471,
+      "reason": "边缘截断"
+    }
+  ],
+  "tracked_target": {
+    "box": [
+      51,
+      46,
+      94,
+      91
+    ],
+    "center": [
+      73.76364804110469,
+      67.95375722543352
+    ],
+    "area": 1557,
+    "fill": 0.769,
+    "accepted": true,
+    "solidity": 0.972,
+    "polygon": [
+      [
+        51,
+        71
+      ],
+      [
+        59,
+        48
+      ],
+      [
+        88,
+        46
+      ],
+      [
+        94,
+        66
+      ],
+      [
+        89,
+        91
+      ],
+      [
+        62,
+        89
+      ]
+    ],
+    "color_support": 0.974,
+    "calibrated": false,
+    "shape_match": 0.85,
+    "green_match": 0.474,
+    "dark_support": 0.952,
+    "reason": "物块候选"
+  },
+  "memory_assisted": false,
+  "tracking_count": 105,
+  "dominance": 15,
+  "minimum_area": 30
+}

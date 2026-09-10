@@ -8,6 +8,8 @@ idf_component_register(
         "control/camera_ball_vision.c"
         "control/camera_line_vision.c"
         "control/camera_preview.c"
+        "control/camera_cube_vision.c"
+        "control/cube_grab.c"
         "control/kiwi_kinematics.c"
         "control/line_follow.c"
         "control/obstacle_supervisor.c"

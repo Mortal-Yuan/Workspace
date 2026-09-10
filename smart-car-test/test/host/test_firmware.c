@@ -2456,6 +2456,20 @@ static void test_motor_driver(void)
 
 static void test_camera_preview_packet(void)
 {
+    static uint8_t raw_rgb[CAMERA_PREVIEW_MAX_PIXELS * 3U];
+    static camera_preview_packet_t raw_packet;
+    for (size_t i = 0; i < CAMERA_PREVIEW_MAX_PIXELS; ++i) {
+        raw_rgb[i * 3] = 64;
+        raw_rgb[i * 3 + 1] = 128;
+        raw_rgb[i * 3 + 2] = 64;
+    }
+    assert(camera_preview_build_raw_rgb332(&raw_packet, raw_rgb, 160, 120, 42, 100));
+    assert(raw_packet.flags == (CAMERA_PREVIEW_FLAG_RAW | CAMERA_PREVIEW_FLAG_FRAME_VALID));
+    assert(raw_packet.payload_size == 19200 && raw_packet.sequence == 42);
+    for (size_t i = 0; i < CAMERA_PREVIEW_MAX_PIXELS; ++i)
+        assert(raw_packet.pixels[i] == 0x51);
+    assert(raw_packet.payload_crc32 == camera_preview_crc32(raw_packet.pixels, 19200));
+    assert(!camera_preview_build_raw_rgb332(&raw_packet, raw_rgb, 80, 60, 42, 100));
     uint8_t pixels[CAMERA_PREVIEW_PIXEL_COUNT * 3U];
     memset(pixels, 255, sizeof(pixels));
     const size_t black_index = 45U * CAMERA_PREVIEW_WIDTH + 22U;
@@ -2515,7 +2529,7 @@ static void test_camera_preview_packet(void)
         &packet, pixels, CAMERA_PREVIEW_WIDTH, CAMERA_PREVIEW_HEIGHT,
         &APP_CONFIG.camera_line, &analysis, &ball, &left_target,
         &right_target, 1234, 5678));
-    assert(sizeof(packet) == 4836);
+    assert(sizeof(packet) == 19236);
     assert(packet.magic[0] == 0xa5 && packet.magic[1] == 0x5a);
     assert(packet.version == CAMERA_PREVIEW_VERSION);
     assert(packet.width == CAMERA_PREVIEW_WIDTH);
@@ -2543,16 +2557,24 @@ static void test_camera_preview_packet(void)
     assert(packet.payload_crc32 == camera_preview_crc32(
         packet.pixels, packet.payload_size));
 
-    /* A larger recognition frame must be downsampled into the unchanged
-     * low-bandwidth 80x60 wire packet. */
+    /* The high-resolution preview preserves detail absent from 80x60 input. */
+    memset(s_test_image, 255, sizeof(s_test_image));
+    s_test_image[(5U * TEST_IMAGE_WIDTH + 5U) * 3U] = 0;
+    s_test_image[(5U * TEST_IMAGE_WIDTH + 5U) * 3U + 1U] = 0;
+    s_test_image[(5U * TEST_IMAGE_WIDTH + 5U) * 3U + 2U] = 255;
     camera_preview_packet_t scaled_packet;
     assert(camera_preview_build_rgb332(
         &scaled_packet, s_test_image, TEST_IMAGE_WIDTH, TEST_IMAGE_HEIGHT,
         &APP_CONFIG.camera_line, &analysis, &ball, &left_target,
         &right_target, 1235, 5679));
-    assert(scaled_packet.width == CAMERA_PREVIEW_WIDTH &&
-           scaled_packet.height == CAMERA_PREVIEW_HEIGHT &&
+    assert(scaled_packet.width == 160 &&
+           scaled_packet.height == 120 &&
            scaled_packet.sequence == 1235);
+    assert(scaled_packet.payload_size == 160 * 120);
+    assert(scaled_packet.pixels[5U * 160 + 5U] == 0x03);
+    assert(scaled_packet.pixels[5U * 160 + 4U] == 0xff);
+    assert(scaled_packet.pixels[62U * 160 + 60U] == 0xfc);
+    assert(scaled_packet.pixels[100U * 160 + 60U] == 0xfc);
     assert(scaled_packet.payload_crc32 == camera_preview_crc32(
         scaled_packet.pixels, scaled_packet.payload_size));
 }

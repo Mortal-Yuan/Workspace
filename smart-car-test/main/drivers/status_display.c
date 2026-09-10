@@ -295,6 +295,7 @@ static const char *mode_text(app_mode_t mode)
     case APP_MODE_SELF_TEST: return "TEST";
     case APP_MODE_BALL_APPROACH: return "BALL";
     case APP_MODE_BALL_MISSION: return "MISSION";
+    case APP_MODE_CUBE_GRAB: return "GRAB";
     case APP_MODE_FAULT: return "FAULT";
     default: return "UNKNOWN";
     }

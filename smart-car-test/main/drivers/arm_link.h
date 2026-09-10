@@ -34,3 +34,5 @@ typedef struct {
 esp_err_t arm_link_init(arm_link_t *link, int tx_pin, int rx_pin);
 esp_err_t arm_link_send_ping(arm_link_t *link, uint16_t *sequence);
 bool arm_link_poll(arm_link_t *link, arm_link_event_t *event);
+
+esp_err_t arm_link_send_command(arm_link_t *link, const char *command, uint16_t *sequence);

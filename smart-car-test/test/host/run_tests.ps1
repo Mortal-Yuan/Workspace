@@ -22,6 +22,16 @@ $outputDirectory = Join-Path $repository 'build\host-tests'
 New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
 $output = Join-Path $outputDirectory 'firmware_tests.exe'
 
+$cubeOutput = Join-Path $outputDirectory 'cube_grab_tests.exe'
+& $compiler -std=c11 -Wall -Wextra -Werror `
+    "-I$repository\main\control" "-I$repository\main\core" `
+    "$PSScriptRoot\test_cube_grab.c" `
+    "$repository\main\control\camera_cube_vision.c" `
+    "$repository\main\control\cube_grab.c" -o $cubeOutput
+if ($LASTEXITCODE -ne 0) { throw 'Cube host compilation failed' }
+& $cubeOutput "$repository\tools\test-data"
+if ($LASTEXITCODE -ne 0) { throw 'Cube host tests failed' }
+
 & $compiler `
     -std=c11 -Wall -Wextra -Werror `
     "-I$PSScriptRoot\fakes" `

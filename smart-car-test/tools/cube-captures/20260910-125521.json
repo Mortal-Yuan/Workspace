@@ -1,0 +1,384 @@
+{
+  "sequence": 3351,
+  "candidates": [
+    {
+      "box": [
+        44,
+        84,
+        47,
+        91
+      ],
+      "center": [
+        45.5,
+        87.5
+      ],
+      "area": 32,
+      "fill": 1.0,
+      "accepted": true,
+      "solidity": 1.0,
+      "polygon": [
+        [
+          44,
+          84
+        ],
+        [
+          47,
+          84
+        ],
+        [
+          47,
+          91
+        ],
+        [
+          44,
+          91
+        ]
+      ],
+      "color_support": 0.844,
+      "calibrated": false,
+      "shape_match": 0.754,
+      "green_match": 0.38,
+      "reason": "物块候选"
+    },
+    {
+      "box": [
+        127,
+        99,
+        159,
+        119
+      ],
+      "center": [
+        147.2684365781711,
+        111.09144542772862
+      ],
+      "area": 339,
+      "fill": 0.504,
+      "accepted": false,
+      "solidity": 0.896,
+      "polygon": [
+        [
+          127,
+          119
+        ],
+        [
+          144,
+          104
+        ],
+        [
+          159,
+          99
+        ],
+        [
+          159,
+          115
+        ],
+        [
+          152,
+          118
+        ]
+      ],
+      "color_support": 0.92,
+      "calibrated": false,
+      "shape_match": 0.502,
+      "green_match": 0.305,
+      "reason": "边缘截断"
+    },
+    {
+      "box": [
+        131,
+        13,
+        159,
+        36
+      ],
+      "center": [
+        149.52941176470588,
+        23.352941176470587
+      ],
+      "area": 289,
+      "fill": 0.415,
+      "accepted": false,
+      "solidity": 0.58,
+      "polygon": [
+        [
+          131,
+          13
+        ],
+        [
+          158,
+          13
+        ],
+        [
+          159,
+          33
+        ],
+        [
+          147,
+          36
+        ],
+        [
+          132,
+          21
+        ]
+      ],
+      "color_support": 0.585,
+      "calibrated": false,
+      "shape_match": 0.459,
+      "green_match": 0.221,
+      "reason": "边缘截断"
+    },
+    {
+      "box": [
+        0,
+        58,
+        31,
+        82
+      ],
+      "center": [
+        10.0801393728223,
+        73.21602787456446
+      ],
+      "area": 287,
+      "fill": 0.363,
+      "accepted": false,
+      "solidity": 0.658,
+      "polygon": [
+        [
+          0,
+          58
+        ],
+        [
+          31,
+          74
+        ],
+        [
+          31,
+          78
+        ],
+        [
+          4,
+          82
+        ],
+        [
+          0,
+          79
+        ]
+      ],
+      "color_support": 0.76,
+      "calibrated": false,
+      "shape_match": 0.306,
+      "green_match": 0.122,
+      "reason": "边缘截断"
+    },
+    {
+      "box": [
+        44,
+        112,
+        84,
+        119
+      ],
+      "center": [
+        62.226950354609926,
+        116.29787234042553
+      ],
+      "area": 141,
+      "fill": 0.43,
+      "accepted": false,
+      "solidity": 0.583,
+      "polygon": [
+        [
+          45,
+          112
+        ],
+        [
+          78,
+          114
+        ],
+        [
+          84,
+          119
+        ],
+        [
+          44,
+          118
+        ]
+      ],
+      "color_support": 0.816,
+      "calibrated": false,
+      "shape_match": 0.433,
+      "green_match": 0.235,
+      "reason": "边缘截断"
+    },
+    {
+      "box": [
+        73,
+        15,
+        86,
+        24
+      ],
+      "center": [
+        80.08571428571429,
+        17.485714285714284
+      ],
+      "area": 35,
+      "fill": 0.279,
+      "accepted": false,
+      "solidity": 0.446,
+      "polygon": [
+        [
+          73,
+          16
+        ],
+        [
+          82,
+          15
+        ],
+        [
+          84,
+          16
+        ],
+        [
+          86,
+          21
+        ],
+        [
+          84,
+          24
+        ],
+        [
+          73,
+          19
+        ]
+      ],
+      "color_support": 0.8,
+      "calibrated": false,
+      "shape_match": 0.18,
+      "green_match": 0.2,
+      "reason": "形状待确认"
+    },
+    {
+      "box": [
+        41,
+        97,
+        47,
+        107
+      ],
+      "center": [
+        43.54545454545455,
+        102.12121212121212
+      ],
+      "area": 33,
+      "fill": 0.509,
+      "accepted": false,
+      "solidity": 0.943,
+      "polygon": [
+        [
+          41,
+          102
+        ],
+        [
+          43,
+          97
+        ],
+        [
+          47,
+          100
+        ],
+        [
+          43,
+          107
+        ],
+        [
+          42,
+          107
+        ]
+      ],
+      "color_support": 0.727,
+      "calibrated": false,
+      "shape_match": 0.555,
+      "green_match": 0.227,
+      "reason": "形状待确认"
+    },
+    {
+      "box": [
+        135,
+        29,
+        142,
+        35
+      ],
+      "center": [
+        138.96774193548387,
+        31.93548387096774
+      ],
+      "area": 31,
+      "fill": 0.591,
+      "accepted": false,
+      "solidity": 1.0,
+      "polygon": [
+        [
+          135,
+          29
+        ],
+        [
+          141,
+          30
+        ],
+        [
+          142,
+          35
+        ],
+        [
+          137,
+          34
+        ]
+      ],
+      "color_support": 0.516,
+      "calibrated": false,
+      "shape_match": 0.616,
+      "green_match": 0.23,
+      "reason": "形状待确认"
+    }
+  ],
+  "tracked_target": {
+    "box": [
+      44,
+      84,
+      47,
+      91
+    ],
+    "center": [
+      45.5,
+      87.5
+    ],
+    "area": 32,
+    "fill": 1.0,
+    "accepted": true,
+    "solidity": 1.0,
+    "polygon": [
+      [
+        44,
+        84
+      ],
+      [
+        47,
+        84
+      ],
+      [
+        47,
+        91
+      ],
+      [
+        44,
+        91
+      ]
+    ],
+    "color_support": 0.844,
+    "calibrated": false,
+    "shape_match": 0.754,
+    "green_match": 0.38,
+    "reason": "物块候选"
+  },
+  "memory_assisted": false,
+  "tracking_count": 4,
+  "dominance": 15,
+  "minimum_area": 30
+}

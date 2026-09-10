@@ -31,10 +31,12 @@ typedef struct {
     bool enable_display;
     bool camera_view;
     bool preview_enable;
+    bool preview_raw;
     bool preview_disable;
     bool ball_approach;
     bool ball_mission;
     bool arm_ping;
+    bool cube_start;
 } command_intents_t;
 
 static void enable_status_display(app_controller_t *controller)
@@ -179,7 +181,9 @@ static void start_autonomy(app_controller_t *controller, int64_t now_us,
 static command_intents_t parse_commands(command_batch_t batch,
                                         bool boot_event)
 {
-    command_intents_t intents = {.boot = boot_event};
+    /* Standalone grab build: BOOT starts one explicit grab run. The existing
+     * combined line/obstacle/ball workflow remains available via serial f. */
+    command_intents_t intents = {.cube_start = boot_event};
     for (uint8_t i = 0; i < batch.count; ++i) {
         const char command = (char)tolower((unsigned char)batch.bytes[i]);
         switch (command) {
@@ -198,15 +202,18 @@ static command_intents_t parse_commands(command_batch_t batch,
         case 'h': intents.help = true; break;
         case 'v': intents.enable_display = true; break;
         case 'p': intents.camera_view = true; break;
+        case 'o': intents.preview_enable = true; intents.preview_raw = true; break;
         case 'u': intents.preview_enable = true; break;
         case 'z': intents.preview_disable = true; break;
         case 'b': intents.ball_approach = true; break;
         case 'n': intents.ball_mission = true; break;
+        case 'l': intents.cube_start = true; break;
         case 'i': intents.arm_ping = true; break;
         default: break;
         }
     }
     if (intents.stop) {
+        intents.cube_start=false;
         intents.force_auto = false;
         intents.boot = false;
         intents.motion = 0;
@@ -478,7 +485,7 @@ static void apply_intents(app_controller_t *controller,
     if (intents.preview_enable || intents.preview_disable) {
         const bool enabled = intents.preview_enable &&
                              !intents.preview_disable;
-        camera_line_sensor_set_usb_preview(&controller->camera_line, enabled);
+        camera_line_sensor_set_usb_preview(&controller->camera_line, enabled, intents.preview_raw);
         diagnostics_request_usb_preview(&controller->diagnostics, enabled);
         publish_event(controller, DIAGNOSTIC_EVENT_INFO,
                       enabled ? 1 : 0, 0,
@@ -521,6 +528,11 @@ static void apply_intents(app_controller_t *controller,
         start_ball_approach(controller, now_us);
     } else if (intents.ball_mission && controller->fault_bitmap == 0) {
         start_ball_mission(controller, now_us);
+    } else if (intents.cube_start && controller->fault_bitmap == 0 &&
+               controller->arm_link_ready && controller->mode == APP_MODE_IDLE) {
+        cube_grab_start(&controller->cube_grab,now_us);
+        controller->mode=APP_MODE_CUBE_GRAB;
+        camera_line_sensor_cube_enable(&controller->camera_line,true);
     } else if (intents.motion && controller->fault_bitmap == 0) {
         controller->mode = APP_MODE_MANUAL;
         controller->self_test = (self_test_t) {0};
@@ -618,9 +630,16 @@ static void controller_step(app_controller_t *controller, int64_t now_us)
     controller->latest_camera = camera_line_sensor_snapshot(
         &controller->camera_line, now_us);
     controller->latest_line = controller->latest_camera.virtual_sensors;
+    bool cube_pong=false,cube_ack=false,cube_done=false,cube_error=false;
     if (controller->arm_link_ready) {
         arm_link_event_t arm_event;
         if (arm_link_poll(&controller->arm_link, &arm_event)) {
+            if (arm_event.sequence==controller->cube_arm_sequence) {
+                cube_pong=arm_event.kind==ARM_LINK_EVENT_PONG;
+                cube_ack=arm_event.kind==ARM_LINK_EVENT_ACK;
+                cube_done=arm_event.kind==ARM_LINK_EVENT_DONE;
+                cube_error=arm_event.kind==ARM_LINK_EVENT_ERROR || arm_event.kind==ARM_LINK_EVENT_BUSY;
+            }
             const char *text = arm_event.kind == ARM_LINK_EVENT_PONG ?
                                    "arm_pong_received" :
                                arm_event.kind == ARM_LINK_EVENT_ACK ?
@@ -648,6 +667,11 @@ static void controller_step(app_controller_t *controller, int64_t now_us)
                   parse_commands(batch, boot_event),
                   now_us);
 
+    if (controller->mode != APP_MODE_CUBE_GRAB &&
+        controller->cube_grab.state>CUBE_IDLE && controller->cube_grab.state<CUBE_DONE) {
+        cube_grab_abort(&controller->cube_grab);
+        camera_line_sensor_cube_enable(&controller->camera_line,false);
+    }
     const bool autonomous_needs_camera =
         controller->obstacle.state == OBSTACLE_STATE_SENSOR_CHECK ||
         controller->obstacle.state == OBSTACLE_STATE_CLEAR ||
@@ -663,7 +687,17 @@ static void controller_step(app_controller_t *controller, int64_t now_us)
     start_chained_ball_mission_if_ready(controller, now_us);
 
     motor_command_t final_command = motor_command_zero();
-    if (controller->mode == APP_MODE_MANUAL) {
+    if (controller->mode == APP_MODE_CUBE_GRAB) {
+        cube_observation_t cube=camera_line_sensor_cube_snapshot(&controller->camera_line);
+        ultrasonic_snapshot_t us=ultrasonic_snapshot(&controller->ultrasonic);
+        cube_grab_state_t old=controller->cube_grab.state;
+        final_command=cube_grab_step(&controller->cube_grab,&cube,us.filtered_mm,
+            us.quality==ULTRASONIC_QUALITY_VALID && now_us>=us.updated_us &&
+            now_us-us.updated_us<300000 && us.raw_mm>=20,
+            cube_pong,cube_ack,cube_done,cube_error,now_us);
+        if (old!=controller->cube_grab.state) publish_event(controller,
+            DIAGNOSTIC_EVENT_INFO,controller->cube_grab.state,cube.area,"cube_grab_state",now_us);
+    } else if (controller->mode == APP_MODE_MANUAL) {
         final_command = controller->manual_command;
     } else if (controller->mode == APP_MODE_SELF_TEST) {
         final_command = self_test_step(controller, now_us);
@@ -758,6 +792,16 @@ static void controller_step(app_controller_t *controller, int64_t now_us)
                   result == MOTOR_RESULT_RECOVERABLE_FAULT ?
                   FAULT_RECOVERABLE_EXPLICIT_REINIT :
                   FAULT_UNRECOVERABLE_THIS_BOOT);
+    }
+    cube_grab_t *grab=&controller->cube_grab;
+    if (result!=MOTOR_RESULT_OK && controller->mode==APP_MODE_CUBE_GRAB) cube_grab_abort(grab);
+    const char *arm_command=grab->send_stop ? "STOP" : grab->send_ping ? "PING" : grab->send_grab ? "GRAB" : NULL;
+    if (arm_command) {
+        /* Motor zero has already been applied before the GRAB write. */
+        esp_err_t sent=arm_link_send_command(&controller->arm_link,arm_command,&controller->cube_arm_sequence);
+        grab->send_stop=grab->send_ping=grab->send_grab=false;
+        if(sent!=ESP_OK) cube_grab_abort(grab);
+        publish_event(controller,DIAGNOSTIC_EVENT_INFO,sent,controller->cube_arm_sequence,"cube_arm_command",now_us);
     }
     publish_snapshot(controller, now_us);
 }

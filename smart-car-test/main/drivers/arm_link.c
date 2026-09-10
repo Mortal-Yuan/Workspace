@@ -60,15 +60,15 @@ esp_err_t arm_link_init(arm_link_t *link, int tx_pin, int rx_pin)
     return ESP_OK;
 }
 
-esp_err_t arm_link_send_ping(arm_link_t *link, uint16_t *sequence)
+esp_err_t arm_link_send_command(arm_link_t *link, const char *command, uint16_t *sequence)
 {
     if (link == NULL || !link->initialized) return ESP_ERR_INVALID_STATE;
     const uint16_t current = link->next_sequence++;
-    if (link->next_sequence == 0) link->next_sequence = 1;
+    if (link->next_sequence > 9999 || link->next_sequence == 0) link->next_sequence = 1;
 
     char frame[32];
     const int length = snprintf(frame, sizeof(frame),
-                                "CAR,PING,%04u\n", current);
+                                "CAR,%s,%04u\n", command, current);
     if (length <= 0 || length >= (int)sizeof(frame)) {
         return ESP_ERR_INVALID_SIZE;
     }
@@ -105,3 +105,6 @@ bool arm_link_poll(arm_link_t *link, arm_link_event_t *event)
     }
     return false;
 }
+
+esp_err_t arm_link_send_ping(arm_link_t *link, uint16_t *sequence)
+{ return arm_link_send_command(link,"PING",sequence); }

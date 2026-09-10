@@ -1,6 +1,7 @@
 #include "diagnostics.h"
 
 #include <inttypes.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -28,6 +29,7 @@ static const char *mode_name(app_mode_t mode)
     case APP_MODE_SELF_TEST: return "SELF_TEST";
     case APP_MODE_BALL_APPROACH: return "BALL";
     case APP_MODE_BALL_MISSION: return "MISSION";
+    case APP_MODE_CUBE_GRAB: return "GRAB";
     case APP_MODE_FAULT: return "FAULT";
     default: return "UNKNOWN";
     }
@@ -543,7 +545,10 @@ void diagnostics_write_camera_preview(
     portEXIT_CRITICAL(&diagnostics->preview_lock);
     if (active) {
         /* One driver call preserves packet ordering relative to text writers. */
-        (void)uart_write_bytes(UART_NUM_0, packet, sizeof(*packet));
+        if (packet->payload_size <= sizeof(packet->pixels)) {
+            (void)uart_write_bytes(UART_NUM_0, packet,
+                offsetof(camera_preview_packet_t, pixels) + packet->payload_size);
+        }
     }
 }
 

@@ -2,6 +2,15 @@
 
 ESP-IDF 5.4.4 bring-up project for an ESP32-S3 three-wheel omnidirectional smart car.
 
+当前为脱机抓取版本：空闲时 **BOOT / 串口 `l`** 启动一次物块对齐抓取，
+`x` 停止；原巡线组合流程保留 `f` 入口。上电保持静止。
+详见 [脱机抓取说明](2026-09-10_脱机对齐抓取流程.md)。
+
+绿色物块抓取调试：使用带 pyserial 和 Tk 的 Python 运行
+`tools/cube_grab_monitor.py --port COM3`，显示 160×120 原图、绿色掩码、
+候选轮廓及中心；打开前关闭占用 COM3 的旧窗口。仅观察，未接入自动抓取。
+详见 [绿色物块调试记录](2026-09-10_绿色物块抓取识别调试.md)。
+
 Current verified features:
 
 - Three PWM motor channels with direction control.
@@ -155,7 +164,7 @@ available for standalone ball-task testing.
 
 ## USB Camera Monitor
 
-The main line-follow/avoidance firmware can stream its processed 80x60 camera
+The main line-follow/avoidance firmware can stream its processed 160x120 camera
 view and normal telemetry through the CP210x USB-UART connection. Start the PC
 window from PowerShell:
 
@@ -163,7 +172,7 @@ window from PowerShell:
 powershell -ExecutionPolicy Bypass -File .\tools\start_usb_camera_monitor.ps1 -Port COM3
 ```
 
-The window does not start the motors. It shows the camera image at about 5 FPS,
+The window does not start the motors. It shows the camera image at up to about 1.7 FPS,
 current mode, obstacle and line-follow states, camera geometry, ultrasonic
 distance, A/B/C commands, and encoders. Red pixels are those admitted by the
 same adaptive black threshold used by the vehicle; the yellow rectangle is the

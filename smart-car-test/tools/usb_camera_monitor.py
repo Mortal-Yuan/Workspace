@@ -2,7 +2,7 @@
 """Smart-car USB camera and telemetry monitor.
 
 The ESP32-S3 keeps the UVC camera on its USB-host port. This program receives
-the car's processed 80x60 preview and normal STATUS/EVENT records through the
+the car's processed 160x120 preview and normal STATUS/EVENT records through the
 CP210x UART connection. No Pillow or OpenCV dependency is required.
 """
 
@@ -29,7 +29,7 @@ PREVIEW_BAUD = 460800
 MAGIC = bytes((0xA5, 0x5A, 0xC3, 0x3C)) + b"SCV1"
 HEADER = struct.Struct("<8s8BIIhhhHI")
 HEADER_SIZE = HEADER.size
-MAX_PAYLOAD = 80 * 60
+MAX_PAYLOAD = 160 * 120
 READY_MARKER = b"USB_PREVIEW_READY baud=460800 version=1"
 
 FLAG_FRAME_VALID = 1 << 0
@@ -207,7 +207,7 @@ def discover_port(requested: Optional[str]) -> str:
     raise RuntimeError(f"未找到 CP210x；当前串口：{available}")
 
 
-def connect_preview(port: str) -> serial.Serial:
+def connect_preview(port: str, preview_command: bytes = b"u") -> serial.Serial:
     """Attach without ever transmitting at an unknown baud rate."""
 
     # A previous monitor may still own an active high-rate stream. Listen for
@@ -223,7 +223,7 @@ def connect_preview(port: str) -> serial.Serial:
             break
     if active:
         probe.reset_input_buffer()
-        probe.write(b"u")
+        probe.write(preview_command)
         return probe
     probe.close()
 
@@ -241,14 +241,14 @@ def connect_preview(port: str) -> serial.Serial:
     while time.monotonic() < deadline:
         now = time.monotonic()
         if now >= next_request:
-            connection.write(b"u")
+            connection.write(preview_command)
             next_request = now + 0.5
         response.extend(connection.read(512))
         if READY_MARKER in response:
             connection.baudrate = PREVIEW_BAUD
             time.sleep(0.08)
             connection.reset_input_buffer()
-            connection.write(b"u")
+            connection.write(preview_command)
             return connection
         if len(response) > 8192:
             del response[:-4096]
@@ -264,7 +264,7 @@ def connect_preview(port: str) -> serial.Serial:
         frames, _ = parser.feed(probe.read(4096))
         if frames:
             probe.reset_input_buffer()
-            probe.write(b"u")
+            probe.write(preview_command)
             return probe
     probe.close()
     raise RuntimeError(
@@ -274,9 +274,10 @@ def connect_preview(port: str) -> serial.Serial:
 
 class SerialWorker(threading.Thread):
     def __init__(self, port: str, connection: serial.Serial,
-                 output: queue.Queue[tuple[str, object]]) -> None:
+                 output: queue.Queue[tuple[str, object]], preview_command: bytes = b"u") -> None:
         super().__init__(name="smart-car-usb-reader", daemon=True)
         self.port = port
+        self.preview_command = preview_command
         self.connection = connection
         self.output = output
         self.parser = FrameStreamParser()
@@ -315,7 +316,7 @@ class SerialWorker(threading.Thread):
                     self.connection.close()
             while not self.stop_event.is_set():
                 try:
-                    replacement = connect_preview(self.port)
+                    replacement = connect_preview(self.port, self.preview_command)
                     if self.stop_event.is_set():
                         replacement.write(b"z")
                         replacement.close()
@@ -363,7 +364,7 @@ class SerialWorker(threading.Thread):
                         return
                     continue
                 if now - self.last_heartbeat >= 1.0:
-                    self.send(b"u")
+                    self.send(self.preview_command)
                     self.last_heartbeat = now
         except (serial.SerialException, OSError) as error:
             self._emit(("error", str(error)))
@@ -693,7 +694,7 @@ def run_self_test() -> None:
     payload = bytes(index & 0xFF for index in range(MAX_PAYLOAD))
     crc = zlib.crc32(payload) & 0xFFFFFFFF
     header = HEADER.pack(
-        MAGIC, 1, 80, 60, 1,
+        MAGIC, 1, 160, 120, 1,
         FLAG_FRAME_VALID | FLAG_LINE_DETECTED | FLAG_BALL_CANDIDATE |
         FLAG_BALL_DETECTED,
         99, 123, 0, 42, 31415, -100, 200, -50, len(payload), crc,
@@ -711,6 +712,16 @@ def run_self_test() -> None:
     assert frames[0].flags & FLAG_BALL_DETECTED
     assert any(line.startswith("STATUS") for line in lines)
     assert parser.crc_errors == 0
+    assert (frames[0].width, frames[0].height) == (160, 120)
+    # Backward compatibility with existing 80x60 firmware and CRC recovery.
+    small_payload = payload[:80 * 60]
+    small_header = HEADER.pack(
+        MAGIC, 1, 80, 60, 1, 0, 99, 123, 0, 43, 31416,
+        0, 0, 0, len(small_payload), zlib.crc32(small_payload) & 0xFFFFFFFF)
+    bad_payload = bytes([payload[0] ^ 1]) + payload[1:]
+    recovered, _ = parser.feed(header + bad_payload + small_header + small_payload)
+    assert parser.crc_errors == 1
+    assert len(recovered) == 1 and recovered[0].width == 80
     print("usb camera monitor parser: PASS")
 
 
@@ -745,7 +756,7 @@ def run_live_probe(connection: serial.Serial, seconds: float) -> bool:
         f"live preview probe: frames={frame_count} status={status_count} "
         f"seq={first_sequence}->{last_sequence} crc_errors={parser.crc_errors}"
     )
-    return frame_count >= max(2, int(seconds * 2)) and parser.crc_errors == 0
+    return frame_count >= max(2, int(seconds)) and parser.crc_errors == 0
 
 
 def main() -> int:

@@ -1,0 +1,73 @@
+{
+  "reference": {
+    "box": [
+      51,
+      46,
+      94,
+      91
+    ],
+    "center": [
+      73.76364804110469,
+      67.95375722543352
+    ],
+    "area": 1557,
+    "fill": 0.769,
+    "accepted": true,
+    "solidity": 0.972,
+    "polygon": [
+      [
+        51,
+        71
+      ],
+      [
+        59,
+        48
+      ],
+      [
+        88,
+        46
+      ],
+      [
+        94,
+        66
+      ],
+      [
+        89,
+        91
+      ],
+      [
+        62,
+        89
+      ]
+    ],
+    "color_support": 0.974,
+    "calibrated": false,
+    "shape_match": 0.85,
+    "green_match": 0.474,
+    "dark_support": 0.952,
+    "reason": "物块候选"
+  },
+  "source_frame": 15698,
+  "image_width": 160,
+  "image_height": 120,
+  "target_center": [
+    73.76364804110469,
+    67.95375722543352
+  ],
+  "target_area": 1557,
+  "center_tolerance_px": [
+    6,
+    8
+  ],
+  "area_ratio_range": [
+    0.75,
+    1.25
+  ],
+  "ultrasonic_range_mm": [
+    20,
+    40
+  ],
+  "required_stopped_frames": 3,
+  "ultrasonic_observed": "29/29",
+  "notes": "User confirmed physical grab position; tolerances initial engineering defaults, not yet motion-validated"
+}

@@ -15,7 +15,8 @@ enum {
     CAMERA_USB_PID = 0x3307,
     CAMERA_FRAME_BUFFER_BYTES = 512 * 1024,
     CAMERA_URB_BYTES = 10 * 1024,
-    CAMERA_PREVIEW_PERIOD_US = 200000,
+    /* 19.2 KB/frame at 460800 baud leaves room for telemetry at ~1.7 fps. */
+    CAMERA_PREVIEW_PERIOD_US = 600000,
 };
 
 typedef struct {
@@ -305,6 +306,60 @@ static void publish_analysis(
     portEXIT_CRITICAL(&sensor->lock);
 }
 
+static void preview_task(void *argument)
+{
+    camera_line_sensor_t *sensor = argument;
+    while (true) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        /* The producer owns this job until notification. After notification it
+         * cannot overwrite the JPEG or observations until preview_busy clears. */
+        esp_jpeg_image_cfg_t preview_config = {
+            .indata = sensor->preview_jpeg_buffer,
+            .indata_size = sensor->preview_jpeg_size,
+            .outbuf = sensor->preview_rgb_buffer,
+            .outbuf_size = CAMERA_PREVIEW_MAX_PIXELS * 3U,
+            .out_format = JPEG_IMAGE_FORMAT_RGB888,
+            .out_scale = JPEG_IMAGE_SCALE_1_4,
+        };
+        esp_jpeg_image_output_t output = {0};
+        if (esp_jpeg_decode(&preview_config, &output) == ESP_OK &&
+            output.width == CAMERA_PREVIEW_MAX_WIDTH &&
+            output.height == CAMERA_PREVIEW_MAX_HEIGHT &&
+            (sensor->preview_job_raw ?
+             camera_preview_build_raw_rgb332(sensor->preview_packet,
+                sensor->preview_rgb_buffer, output.width, output.height,
+                sensor->preview_sequence, sensor->preview_timestamp_ms) :
+             camera_preview_build_rgb332(sensor->preview_packet,
+                sensor->preview_rgb_buffer, output.width, output.height,
+                &sensor->config, &sensor->preview_analysis,
+                &sensor->preview_ball, &sensor->preview_left_target,
+                &sensor->preview_right_target, sensor->preview_sequence,
+                sensor->preview_timestamp_ms))) {
+            if (sensor->cube_workspace) {
+                /* Independent raw pixels: annotated preview must never enter vision. */
+                for (unsigned i=0;i<CUBE_PIXELS;i++) {
+                    const uint8_t *p=sensor->preview_rgb_buffer+3*i;
+                    sensor->cube_workspace->work[i]=(p[0]&0xe0)|((p[1]>>3)&0x1c)|(p[2]>>6);
+                }
+                /* Detect reads all packed colors before reusing work scratch. */
+                cube_observation_t cube=camera_cube_detect(sensor->cube_workspace,
+                    sensor->cube_workspace->work,sensor->preview_sequence,
+                    (int64_t)sensor->preview_timestamp_ms*1000);
+                portENTER_CRITICAL(&sensor->lock);
+                sensor->cube=cube;
+                portEXIT_CRITICAL(&sensor->lock);
+            }
+            /* Both high-resolution decode and UART backpressure stay below
+             * recognition/control priority, on their own task stack. */
+            sensor->preview_sink(sensor->preview_sink_context,
+                                 sensor->preview_packet);
+        }
+        portENTER_CRITICAL(&sensor->lock);
+        sensor->preview_busy = false;
+        portEXIT_CRITICAL(&sensor->lock);
+    }
+}
+
 static void decode_task(void *argument)
 {
     camera_line_sensor_t *sensor = argument;
@@ -393,25 +448,30 @@ static void decode_task(void *argument)
             bool publish_preview = false;
             uint32_t preview_sequence = 0;
             portENTER_CRITICAL(&sensor->lock);
-            if (sensor->usb_preview_enabled && sensor->preview_sink != NULL &&
+            if ((sensor->usb_preview_enabled || sensor->cube_enabled) && sensor->preview_sink != NULL &&
                 sensor->preview_packet != NULL &&
+                !sensor->preview_busy && frame->data_len <= CAMERA_FRAME_BUFFER_BYTES &&
                 decoded_us >= sensor->next_preview_us) {
+                sensor->preview_busy = true;
+                sensor->preview_job_raw = sensor->preview_raw;
                 sensor->next_preview_us = decoded_us +
                     CAMERA_PREVIEW_PERIOD_US;
                 preview_sequence = sensor->snapshot.received_frames;
                 publish_preview = true;
             }
             portEXIT_CRITICAL(&sensor->lock);
-            if (publish_preview && camera_preview_build_rgb332(
-                    sensor->preview_packet, sensor->rgb_buffer,
-                    output.width, output.height, &sensor->config,
-                    &analysis,
-                    red_ball.candidate ? &red_ball : &green_ball,
-                    &blue_targets.left_target,
-                    &blue_targets.right_target, preview_sequence,
-                    (uint32_t)(decoded_us / 1000))) {
-                sensor->preview_sink(sensor->preview_sink_context,
-                                     sensor->preview_packet);
+            /* Copy one JPEG and its matching observations. Never wait for the
+             * preview consumer: skip new jobs while its single slot is busy. */
+            if (publish_preview) {
+                memcpy(sensor->preview_jpeg_buffer, frame->data, frame->data_len);
+                sensor->preview_jpeg_size = frame->data_len;
+                sensor->preview_analysis = analysis;
+                sensor->preview_ball = red_ball.candidate ? red_ball : green_ball;
+                sensor->preview_left_target = blue_targets.left_target;
+                sensor->preview_right_target = blue_targets.right_target;
+                sensor->preview_sequence = preview_sequence;
+                sensor->preview_timestamp_ms = (uint32_t)(decoded_us / 1000);
+                xTaskNotifyGive(sensor->preview_task);
             }
         } else {
             portENTER_CRITICAL(&sensor->lock);
@@ -505,10 +565,22 @@ esp_err_t camera_line_sensor_init(camera_line_sensor_t *sensor,
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (sensor->ball_workspace == NULL) return ESP_ERR_NO_MEM;
     if (preview_sink != NULL) {
+        sensor->cube_workspace = heap_caps_calloc(1, sizeof(*sensor->cube_workspace), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!sensor->cube_workspace) return ESP_ERR_NO_MEM;
         sensor->preview_packet = heap_caps_calloc(
             1, sizeof(*sensor->preview_packet),
             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (sensor->preview_packet == NULL) return ESP_ERR_NO_MEM;
+        sensor->preview_rgb_buffer = heap_caps_malloc(
+            CAMERA_PREVIEW_MAX_PIXELS * 3U, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        sensor->preview_jpeg_buffer = heap_caps_malloc(
+            CAMERA_FRAME_BUFFER_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (sensor->preview_rgb_buffer == NULL || sensor->preview_jpeg_buffer == NULL)
+            return ESP_ERR_NO_MEM;
+        sensor->preview_task = xTaskCreateStatic(
+            preview_task, "camera_preview", 8192, sensor, 2,
+            sensor->preview_task_stack, &sensor->preview_task_buffer);
+        if (sensor->preview_task == NULL) return ESP_ERR_NO_MEM;
     }
 
     sensor->frame_queue = xQueueCreateStatic(
@@ -587,10 +659,11 @@ bool camera_line_sensor_request_ascii_view(camera_line_sensor_t *sensor)
 }
 
 void camera_line_sensor_set_usb_preview(camera_line_sensor_t *sensor,
-                                        bool enabled)
+                                        bool enabled, bool raw)
 {
     if (sensor == NULL) return;
     portENTER_CRITICAL(&sensor->lock);
+    sensor->preview_raw = raw;
     sensor->usb_preview_enabled = enabled;
     if (enabled) sensor->next_preview_us = 0;
     portEXIT_CRITICAL(&sensor->lock);
@@ -611,4 +684,18 @@ void camera_line_sensor_set_finish_detection_enabled(
         }
     }
     portEXIT_CRITICAL(&sensor->lock);
+}
+
+void camera_line_sensor_cube_enable(camera_line_sensor_t *sensor, bool enabled)
+{
+    portENTER_CRITICAL(&sensor->lock);
+    sensor->cube_enabled=enabled;
+    portEXIT_CRITICAL(&sensor->lock);
+}
+cube_observation_t camera_line_sensor_cube_snapshot(camera_line_sensor_t *sensor)
+{
+    portENTER_CRITICAL(&sensor->lock);
+    cube_observation_t result=sensor->cube;
+    portEXIT_CRITICAL(&sensor->lock);
+    return result;
 }

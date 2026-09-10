@@ -1,0 +1,299 @@
+{
+  "sequence": 481,
+  "candidates": [
+    {
+      "box": [
+        64,
+        26,
+        89,
+        51
+      ],
+      "center": [
+        76.51625239005736,
+        38.50286806883365
+      ],
+      "area": 523,
+      "fill": 0.774,
+      "accepted": true,
+      "solidity": 1.0,
+      "polygon": [
+        [
+          64,
+          31
+        ],
+        [
+          68,
+          28
+        ],
+        [
+          79,
+          26
+        ],
+        [
+          88,
+          29
+        ],
+        [
+          89,
+          39
+        ],
+        [
+          86,
+          47
+        ],
+        [
+          81,
+          51
+        ],
+        [
+          68,
+          49
+        ],
+        [
+          65,
+          43
+        ]
+      ],
+      "color_support": 0.633,
+      "calibrated": true,
+      "shape_match": 0.945,
+      "green_match": 0.726,
+      "reason": "物块候选"
+    },
+    {
+      "box": [
+        114,
+        75,
+        159,
+        119
+      ],
+      "center": [
+        137.07565789473685,
+        97.125
+      ],
+      "area": 304,
+      "fill": 0.474,
+      "accepted": false,
+      "solidity": 0.643,
+      "polygon": [
+        [
+          114,
+          119
+        ],
+        [
+          151,
+          75
+        ],
+        [
+          159,
+          76
+        ],
+        [
+          126,
+          116
+        ]
+      ],
+      "color_support": 0.816,
+      "calibrated": false,
+      "shape_match": 0.144,
+      "green_match": 0.085,
+      "reason": "边缘截断"
+    },
+    {
+      "box": [
+        0,
+        76,
+        27,
+        85
+      ],
+      "center": [
+        12.073170731707316,
+        80.48780487804878
+      ],
+      "area": 123,
+      "fill": 0.466,
+      "accepted": false,
+      "solidity": 0.755,
+      "polygon": [
+        [
+          4,
+          77
+        ],
+        [
+          27,
+          76
+        ],
+        [
+          27,
+          79
+        ],
+        [
+          7,
+          85
+        ],
+        [
+          0,
+          84
+        ]
+      ],
+      "color_support": 0.886,
+      "calibrated": false,
+      "shape_match": 0.442,
+      "green_match": 0.167,
+      "reason": "边缘截断"
+    },
+    {
+      "box": [
+        35,
+        0,
+        45,
+        12
+      ],
+      "center": [
+        41.472727272727276,
+        5.872727272727273
+      ],
+      "area": 55,
+      "fill": 0.414,
+      "accepted": false,
+      "solidity": 0.705,
+      "polygon": [
+        [
+          35,
+          2
+        ],
+        [
+          39,
+          0
+        ],
+        [
+          45,
+          4
+        ],
+        [
+          44,
+          12
+        ],
+        [
+          40,
+          12
+        ]
+      ],
+      "color_support": 0.582,
+      "calibrated": false,
+      "shape_match": 0.36,
+      "green_match": 0.203,
+      "reason": "边缘截断"
+    },
+    {
+      "box": [
+        133,
+        12,
+        144,
+        19
+      ],
+      "center": [
+        138.64,
+        15.84
+      ],
+      "area": 50,
+      "fill": 0.553,
+      "accepted": false,
+      "solidity": 0.917,
+      "polygon": [
+        [
+          133,
+          15
+        ],
+        [
+          137,
+          12
+        ],
+        [
+          143,
+          13
+        ],
+        [
+          144,
+          17
+        ],
+        [
+          140,
+          19
+        ],
+        [
+          133,
+          17
+        ]
+      ],
+      "color_support": 0.82,
+      "calibrated": false,
+      "shape_match": 0.624,
+      "green_match": 0.239,
+      "reason": "形状待确认"
+    }
+  ],
+  "tracked_target": {
+    "box": [
+      64,
+      26,
+      89,
+      51
+    ],
+    "center": [
+      76.51625239005736,
+      38.50286806883365
+    ],
+    "area": 523,
+    "fill": 0.774,
+    "accepted": true,
+    "solidity": 1.0,
+    "polygon": [
+      [
+        64,
+        31
+      ],
+      [
+        68,
+        28
+      ],
+      [
+        79,
+        26
+      ],
+      [
+        88,
+        29
+      ],
+      [
+        89,
+        39
+      ],
+      [
+        86,
+        47
+      ],
+      [
+        81,
+        51
+      ],
+      [
+        68,
+        49
+      ],
+      [
+        65,
+        43
+      ]
+    ],
+    "color_support": 0.633,
+    "calibrated": true,
+    "shape_match": 0.945,
+    "green_match": 0.726,
+    "reason": "物块候选"
+  },
+  "memory_assisted": false,
+  "tracking_count": 5,
+  "dominance": 15,
+  "minimum_area": 50
+}

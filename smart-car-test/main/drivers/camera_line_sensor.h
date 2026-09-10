@@ -1,4 +1,5 @@
 #pragma once
+#include "camera_cube_vision.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -43,6 +44,24 @@ typedef struct {
     uvc_host_stream_hdl_t stream;
     uint8_t *rgb_buffer;
     size_t rgb_buffer_size;
+    uint8_t *preview_rgb_buffer;
+    uint8_t *preview_jpeg_buffer;
+    size_t preview_jpeg_size;
+    camera_line_analysis_t preview_analysis;
+    camera_ball_observation_t preview_ball;
+    camera_ball_observation_t preview_left_target;
+    camera_ball_observation_t preview_right_target;
+    uint32_t preview_sequence;
+    uint32_t preview_timestamp_ms;
+    bool preview_busy;
+    camera_cube_workspace_t *cube_workspace;
+    cube_observation_t cube;
+    bool cube_enabled;
+    bool preview_raw;
+    bool preview_job_raw;
+    StaticTask_t preview_task_buffer;
+    StackType_t preview_task_stack[8192];
+    TaskHandle_t preview_task;
     camera_line_vision_workspace_t *vision_workspace;
     camera_ball_vision_workspace_t *ball_workspace;
     camera_preview_packet_t *preview_packet;
@@ -79,6 +98,9 @@ camera_line_snapshot_t camera_line_sensor_snapshot(
     camera_line_sensor_t *sensor, int64_t now_us);
 bool camera_line_sensor_request_ascii_view(camera_line_sensor_t *sensor);
 void camera_line_sensor_set_usb_preview(camera_line_sensor_t *sensor,
-                                        bool enabled);
+                                        bool enabled, bool raw);
 void camera_line_sensor_set_finish_detection_enabled(
     camera_line_sensor_t *sensor, bool enabled);
+
+void camera_line_sensor_cube_enable(camera_line_sensor_t *sensor, bool enabled);
+cube_observation_t camera_line_sensor_cube_snapshot(camera_line_sensor_t *sensor);

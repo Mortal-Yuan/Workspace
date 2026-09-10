@@ -54,6 +54,8 @@ typedef struct {
     ball_mission_t ball_mission;
     diagnostics_t diagnostics;
     arm_link_t arm_link;
+    cube_grab_t cube_grab;
+    uint16_t cube_arm_sequence;
     status_display_t display;
     camera_line_snapshot_t latest_camera;
     line_sensor_sample_t latest_line;
